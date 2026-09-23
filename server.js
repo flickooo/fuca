@@ -85,21 +85,50 @@ const setSetting = (k, v) =>
   db.prepare('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(k, v);
 
 // ---------- bootstrap ----------
-if (!getSetting('group_password')) {
-  const pw = process.env.GROUP_PASSWORD || 'fudbal';
-  setSetting('group_password', hashPw(pw));
-  console.log(`[setup] Group password set to "${pw}" (change it in Admin > Settings)`);
-}
-if (!db.prepare('SELECT 1 FROM players LIMIT 1').get()) {
-  const phone = process.env.ADMIN_PHONE;
-  const name = process.env.ADMIN_NAME || 'Admin';
-  if (phone) {
-    db.prepare('INSERT INTO players(name, phone, is_admin) VALUES(?,?,1)').run(name, normPhone(phone));
-    console.log(`[setup] Created admin ${name} (${normPhone(phone)})`);
+// Env values are cleaned (Railway/Docker users often paste quotes or trailing spaces).
+const envVal = (k) => {
+  const v = process.env[k];
+  if (v == null) return '';
+  return String(v).trim().replace(/^(["'])(.*)\1$/, '$2').trim();
+};
+const sha = (s) => crypto.createHash('sha256').update(s).digest('hex');
+
+// GROUP_PASSWORD: applied on first start, and again whenever the env value changes.
+// (A password changed in Admin > Settings stays until GROUP_PASSWORD itself is changed.)
+{
+  const envPw = envVal('GROUP_PASSWORD');
+  if (envPw && getSetting('group_password_env') !== sha(envPw)) {
+    setSetting('group_password', hashPw(envPw));
+    setSetting('group_password_env', sha(envPw));
+    console.log(`[setup] Group password set from GROUP_PASSWORD (${envPw.length} characters)`);
+  } else if (!getSetting('group_password')) {
+    setSetting('group_password', hashPw('fudbal'));
+    console.log('[setup] No GROUP_PASSWORD set - using default password "fudbal"');
   } else {
-    console.log('[setup] No players yet. Set ADMIN_PHONE (and ADMIN_NAME) env vars and restart to create the first admin.');
+    console.log('[setup] Group password unchanged');
   }
 }
+
+// ADMIN_PHONE: make sure this number exists and is an active admin (every start).
+{
+  const phone = normPhone(envVal('ADMIN_PHONE'));
+  const name = envVal('ADMIN_NAME') || 'Admin';
+  if (phone.length >= 8) {
+    const ex = db.prepare('SELECT * FROM players').all().find((p) => phoneKey(p.phone) === phoneKey(phone));
+    if (!ex) {
+      db.prepare('INSERT INTO players(name, phone, is_admin) VALUES(?,?,1)').run(name, phone);
+      console.log(`[setup] Created admin ${name} (${phone})`);
+    } else if (!ex.is_admin || !ex.active) {
+      db.prepare('UPDATE players SET is_admin=1, active=1 WHERE id=?').run(ex.id);
+      console.log(`[setup] Restored admin rights for ${ex.name}`);
+    } else {
+      console.log(`[setup] Admin ${ex.name} OK`);
+    }
+  } else if (!db.prepare('SELECT 1 FROM players LIMIT 1').get()) {
+    console.log('[setup] No players yet. Set ADMIN_PHONE (and ADMIN_NAME) and restart to create the first admin.');
+  }
+}
+console.log(`[setup] Data stored in ${path.join(DATA_DIR, 'fudbal.db')}`);
 
 // ---------- tiny http framework ----------
 const routes = [];
@@ -185,7 +214,7 @@ route('POST', '/api/login', async (req, res, { body }) => {
   const ip = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress;
   if (limited(ip)) throw new HttpError(429, 'Too many attempts. Try again in 10 minutes.');
   const key = phoneKey(body.phone);
-  const pwOk = checkPw(body.password || '', getSetting('group_password'));
+  const pwOk = checkPw(String(body.password || '').trim(), getSetting('group_password'));
   const player = key.length >= 8 ? db.prepare('SELECT * FROM players WHERE active=1').all().find((p) => phoneKey(p.phone) === key) : null;
   if (!pwOk || !player) {
     attempts.get(ip).push(Date.now());
@@ -386,7 +415,7 @@ route('PUT', '/api/settings/password', (req, res, { user, body }) => {
   requireAdmin(user);
   const pw = String(body.password || '');
   if (pw.length < 4) bad('Password must be at least 4 characters');
-  setSetting('group_password', hashPw(pw));
+  setSetting('group_password', hashPw(pw.trim()));
   send(res, 200, { ok: true });
 });
 
