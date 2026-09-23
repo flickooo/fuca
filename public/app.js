@@ -29,8 +29,8 @@ const fmtDate = (s) => { const d = dt(s); return `${DAYS[d.getDay()]} ${d.getDat
 const fmtShort = (s) => { const d = dt(s); return `${DAYS[d.getDay()]} ${d.getDate()} ${MONTHS[d.getMonth()]}`; };
 const stars = (n) => `<span class="stars">${'■'.repeat(n)}<span class="off">${'■'.repeat(5 - n)}</span></span>`;
 const posBadge = (p) => `<span class="pos ${esc(p)}">${esc(p)}</span>`;
-const initials = (name) => name.split(/\s+/).filter(Boolean).map((w) => w[0]).join('').slice(0, 3).toUpperCase();
-const shortName = (name) => { const w = name.trim().split(/\s+/); return w.length > 1 ? w[w.length - 1] : name; };
+const initials = (name) => name.replace(/\(.*?\)/g, ' ').split(/\s+/).filter((w) => /^\p{L}/u.test(w)).map((w) => w[0]).join('').slice(0, 3).toUpperCase() || name.trim()[0].toUpperCase();
+const shortName = (name) => { const w = name.replace(/\(.*?\)/g, ' ').trim().split(/\s+/).filter(Boolean); return w.length > 1 ? w[w.length - 1] : (w[0] || name); };
 
 const clockText = () => { const d = new Date(); const p = (n) => String(n).padStart(2, '0');
   return `${DAYS[d.getDay()]} ${p(d.getDate())} ${MONTHS[d.getMonth()]} ${p(d.getHours())}:${p(d.getMinutes())}/${p(d.getSeconds())}`; };
@@ -46,11 +46,11 @@ const BENCH = 4;
 function slotLayout(formation, team) {
   // returns [{slot, x, y, role}] with y in % from top; team A defends the bottom goal
   const lines = formation.split('-').map(Number).filter((n) => n > 0);
-  const out = [{ slot: 0, x: 50, y: 93.5, role: 'GK' }];
+  const out = [{ slot: 0, x: 50, y: 94, role: 'GK' }];
   let slot = 1;
   const L = lines.length;
   lines.forEach((n, i) => {
-    const y = L === 1 ? 72 : 81 - (i * (21 / (L - 1)));
+    const y = L === 1 ? 72 : 82.5 - (i * (25 / (L - 1)));
     const role = i === 0 ? 'DEF' : i === L - 1 ? 'FWD' : 'MID';
     for (let j = 0; j < n; j++) out.push({ slot: slot++, x: ((j + 1) / (n + 1)) * 100, y, role });
   });
@@ -553,7 +553,8 @@ async function viewTactics(id) {
 function tacPool(T) {
   const placed = new Set(Object.values(T.asg));
   const ins = T.m.attendance.filter((a) => a.status === 'in');
-  return ins.map((a) => ({ ...a, p: S.pmap[a.player_id] })).filter((a) => a.p).map((a) => ({ ...a, placed: placed.has(a.player_id) }));
+  return ins.map((a) => ({ ...a, p: S.pmap[a.player_id] })).filter((a) => a.p).map((a) => ({ ...a, placed: placed.has(a.player_id) }))
+    .sort((x, y) => (x.reserve - y.reserve) || POS_ORDER[x.p.position] - POS_ORDER[y.p.position] || y.p.rating - x.p.rating || x.p.name.localeCompare(y.p.name));
 }
 function teamOf(T, pid) { const k = Object.keys(T.asg).find((k) => T.asg[k] === pid); return k ? k.split(':') : null; }
 
@@ -568,7 +569,8 @@ function renderTactics(v) {
     const style = bench ? '' : `style="left:${s.x}%;top:${s.y}%"`;
     const role = bench ? 'SUB' : s.role;
     return `<div class="slot ${team} ${p ? '' : 'empty'} ${role === 'GK' ? 'gk' : ''} ${sel ? 'sel' : ''} ${target ? 'target' : ''}" data-key="${key}" ${style} ${ed && p ? 'draggable="true"' : ''}>
-      <div class="shirt">${p ? esc(initials(p.name)) : role}</div><div class="nm">${p ? esc(shortName(p.name)) : ed ? '+' : ''}</div></div>`;
+      <div class="shirt">${p ? esc(initials(p.name)) : role}</div><div class="nm">${p ? esc(shortName(p.name)) : ed ? '+' : ''}</div>
+      ${p ? `<div class="pa ${!bench && p.position !== role ? 'oop' : ''}" title="${!bench && p.position !== role ? `Natural ${p.position}, playing ${role}` : ''}"><span class="pos ${p.position}">${p.position}</span><span class="bar">${'■'.repeat(p.rating)}<i>${'■'.repeat(5 - p.rating)}</i></span></div>` : ''}</div>`;
   };
   const benchSlots = (team) => Array.from({ length: BENCH }, (_, i) => slotHtml(team, { slot: 100 + i }, true)).join('');
   const sum = (team) => Object.entries(T.asg).filter(([k]) => k.startsWith(team + ':')).map(([, pid]) => S.pmap[pid]?.rating || 0);
@@ -595,7 +597,7 @@ function renderTactics(v) {
   <div class="tactics">
     <div class="panel">
       ${ed ? `<div class="hint">${T.sel ? `<b>${esc(S.pmap[selPid]?.name)}</b> selected — tap a position to place ${T.sel.key ? '(or swap)' : ''}, or tap again to cancel.${T.sel.key ? ' <button class="btn sm danger" id="unassign">Remove</button>' : ''}`
-        : 'Tap a player in the list, then tap a position on the pitch. Drag &amp; drop works on desktop.'}</div>` : ''}
+        : 'Tap a player in the list, then tap a position on the pitch. Drag &amp; drop works on desktop. <span class="oop-key">DEF</span> = out of position.'}</div>` : ''}
       <div class="panel-b fm-select" style="justify-content:space-between">
         <span><span class="chip-team B"></span> <b>${esc(m.team_b_name)}</b></span>
         ${ed ? `<select id="fb">${forms.map((f) => `<option ${f === T.fb ? 'selected' : ''}>${f}</option>`).join('')}</select>` : `<span class="muted">${esc(T.fb)}</span>`}
@@ -624,7 +626,7 @@ function renderTactics(v) {
         <div class="table-wrap"><table class="fm"><thead><tr><th></th><th>Name</th><th>Pos</th><th>Ability</th><th>Team</th></tr></thead><tbody>
         ${pool.map((a) => {
           const tm = teamOf(T, a.player_id);
-          return `<tr class="${ed ? 'click' : ''} ${selPid === a.player_id ? 'sel' : ''}" data-pid="${a.player_id}" ${ed ? 'draggable="true"' : ''}>
+          return `<tr class="${ed ? 'click' : ''} ${selPid === a.player_id ? 'sel' : ''} ${a.placed && selPid !== a.player_id ? 'placed' : ''}" data-pid="${a.player_id}" ${ed ? 'draggable="true"' : ''}>
             <td>${a.reserve ? '<span class="st res" title="Reserve">RES</span>' : '<span class="st in">IN</span>'}</td>
             <td class="name">${esc(a.p.name)}</td><td>${posBadge(a.p.position)}</td><td>${stars(a.p.rating)}</td>
             <td>${tm ? `<span class="chip-team ${tm[0]}"></span> ${Number(tm[1]) >= 100 ? '<span class="dim">sub</span>' : ''}` : '<span class="dim">—</span>'}</td></tr>`;
@@ -691,39 +693,84 @@ function slotTap(T, key) {
   T.sel = null; T.dirty = true;
 }
 
-function autoBalance(T) {
-  const m = T.m;
-  const players = T.m.attendance.filter((a) => a.status === 'in' && !a.reserve).map((a) => S.pmap[a.player_id]).filter(Boolean);
-  // sort by ability with a random tie-break so repeated clicks give different (but fair) splits
-  players.sort((a, b) => b.rating - a.rating || Math.random() - 0.5);
-  // keep goalkeepers apart
-  const gks = players.filter((p) => p.position === 'GK');
-  const rest = players.filter((p) => p.position !== 'GK');
-  const A = [], B = []; let sa = 0, sb = 0;
-  gks.forEach((p, i) => { if (i % 2 === 0) { A.push(p); sa += p.rating; } else { B.push(p); sb += p.rating; } });
-  // greedy: give the next-best player to the weaker side (ties: smaller side)
-  for (const p of rest) {
-    const toA = A.length < B.length || (A.length === B.length && (sa < sb || (sa === sb && Math.random() < 0.5)));
-    if (toA) { A.push(p); sa += p.rating; } else { B.push(p); sb += p.rating; }
+const POS_ORDER = { GK: 0, DEF: 1, MID: 2, FWD: 3 };
+// Split the IN players into two teams that are even on ability AND on positions
+// (both keepers apart, defenders/midfielders/forwards spread evenly), then place them on the pitch.
+function balanceSplit(players) {
+  const tot = (t) => t.reduce((x, p) => x + p.rating, 0);
+  const cnt = (t, pos) => t.filter((p) => p.position === pos).length;
+  const W = { GK: 20, DEF: 4, MID: 3, FWD: 4 }; // how much an uneven split of each position hurts
+  const cost = (A, B) => {
+    let c = Math.abs(tot(A) - tot(B)) * 3 + Math.abs(A.length - B.length) * 50;
+    for (const pos of Object.keys(W)) {
+      const a = cnt(A, pos), b = cnt(B, pos);
+      c += W[pos] * (Math.abs(a - b) - ((a + b) % 2)); // odd numbers can't split evenly — don't punish that
+    }
+    return c;
+  };
+  // 1. greedy start: each position group best-first, to the side with fewer of that position / weaker side
+  const rnd = new Map(players.map((p) => [p.id, Math.random()]));
+  const A = [], B = [];
+  for (const pos of ['GK', 'DEF', 'MID', 'FWD']) {
+    const grp = players.filter((p) => p.position === pos).sort((x, y) => y.rating - x.rating || rnd.get(x.id) - rnd.get(y.id));
+    for (const p of grp) {
+      const ca = cnt(A, pos), cb = cnt(B, pos);
+      let toA;
+      if (ca !== cb) toA = ca < cb;
+      else if (A.length !== B.length) toA = A.length < B.length;
+      else { const ta = tot(A), tb = tot(B); toA = ta !== tb ? ta < tb : Math.random() < 0.5; }
+      (toA ? A : B).push(p);
+    }
   }
-  const ORDER = { GK: 0, DEF: 1, MID: 2, FWD: 3 };
+  // 2. improve by swapping players between the teams while it makes things fairer
+  let best = cost(A, B);
+  for (let round = 0; round < 60; round++) {
+    let move = null;
+    for (let i = 0; i < A.length; i++) for (let j = 0; j < B.length; j++) {
+      [A[i], B[j]] = [B[j], A[i]];
+      const c = cost(A, B);
+      if (c < best) { best = c; move = [i, j]; }
+      [A[i], B[j]] = [B[j], A[i]];
+    }
+    if (!move) break;
+    [A[move[0]], B[move[1]]] = [B[move[1]], A[move[0]]];
+  }
+  return [A, B];
+}
+
+function autoBalance(T) {
+  const players = T.m.attendance.filter((a) => a.status === 'in' && !a.reserve).map((a) => S.pmap[a.player_id]).filter(Boolean);
+  const [A, B] = balanceSplit(players);
+  // who can cover a role if nobody has that exact position (best fit first)
+  const FALLBACK = { GK: ['GK', 'DEF', 'MID', 'FWD'], DEF: ['DEF', 'MID', 'FWD', 'GK'], MID: ['MID', 'DEF', 'FWD', 'GK'], FWD: ['FWD', 'MID', 'DEF', 'GK'] };
   const place = (team, list, formation) => {
     const layout = slotLayout(formation, team);
-    const starters = [...list];
+    const pool = [...list].sort((x, y) => y.rating - x.rating);
     const asg = {};
-    // fill slots role by role, preferring players whose position matches
-    for (const role of ['GK', 'DEF', 'FWD', 'MID']) {
-      for (const s of layout.filter((s) => s.role === role)) {
-        let i = starters.findIndex((p) => p.position === role);
-        if (i < 0) i = role === 'GK' ? starters.length - 1 : starters.findIndex((p) => p.position !== 'GK'); // weakest outfielder in goal if no GK
-        if (i < 0) i = 0;
-        if (!starters.length) break;
-        asg[s.slot] = starters.splice(i, 1)[0];
+    // fill the scarcest roles first so specialists land in their own position
+    const roles = ['GK', 'DEF', 'MID', 'FWD'].sort((r1, r2) =>
+      (pool.filter((p) => p.position === r1).length - layout.filter((s) => s.role === r1).length) -
+      (pool.filter((p) => p.position === r2).length - layout.filter((s) => s.role === r2).length));
+    const starters = Math.min(layout.length, pool.length);
+    let placed = 0;
+    for (const role of roles) {
+      for (const s of layout.filter((x) => x.role === role)) {
+        if (placed >= starters) break;
+        let i = -1;
+        for (const pos of FALLBACK[role]) { i = pool.findIndex((p) => p.position === pos); if (i >= 0) break; }
+        if (i < 0) continue;
+        asg[s.slot] = pool.splice(i, 1)[0]; placed++;
       }
     }
-    starters.sort((a, b) => ORDER[a.position] - ORDER[b.position]).slice(0, BENCH).forEach((p, i) => (asg[100 + i] = p));
+    pool.sort((x, y) => POS_ORDER[x.position] - POS_ORDER[y.position]).slice(0, BENCH).forEach((p, i) => (asg[100 + i] = p));
     return asg;
   };
+  // pick the formation that puts the most players in their natural position (keep the current one on a tie)
+  const forms = FORMATIONS[T.m.team_size] || FORMATIONS[6];
+  const oop = (team, list, f) => Object.entries(place(team, list, f)).filter(([slot, p]) => Number(slot) < 100 &&
+    p.position !== slotLayout(f, team).find((s) => s.slot === Number(slot)).role).length;
+  const bestForm = (team, list, cur) => forms.reduce((best, f) => (oop(team, list, f) < oop(team, list, best) ? f : best), cur);
+  T.fa = bestForm('A', A, T.fa); T.fb = bestForm('B', B, T.fb);
   T.asg = {};
   for (const [slot, p] of Object.entries(place('A', A, T.fa))) T.asg[`A:${slot}`] = p.id;
   for (const [slot, p] of Object.entries(place('B', B, T.fb))) T.asg[`B:${slot}`] = p.id;

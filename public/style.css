@@ -295,3 +295,22 @@ a.plink:hover { color: var(--ye); text-decoration: underline; }
 .tile .n { font-size: 40px; line-height: 1; }
 .tile .l { color: var(--cy); text-transform: uppercase; font-size: 17px; }
 .tile .n.wdl { font-size: 30px; white-space: nowrap; padding-top: 6px; }
+
+/* ---------- pitch: position + ability under each player ---------- */
+.slot .pa { display: flex; gap: 3px; align-items: center; background: var(--bk); padding: 0 3px; font-size: 15px; line-height: 1.05; white-space: nowrap; }
+.slot .pa .pos { font-size: 15px; }
+.slot .pa .bar { color: var(--ye); letter-spacing: -1px; font-size: 12px; }
+.slot .pa .bar i { font-style: normal; color: #335; }
+.slot .pa.oop .pos, .oop-key { background: var(--re); color: var(--wh) !important; padding: 0 2px; animation: none; }
+.bench .slot .pa { font-size: 13px; }
+.bench .slot .pa .pos { font-size: 13px; }
+.bench .slot .pa .bar { font-size: 10px; }
+/* players already on the pitch: greyed out in the list */
+table.fm tbody tr.placed td, table.fm tbody tr.placed td * { color: #555 !important; }
+table.fm tbody tr.placed .st { text-decoration: line-through; }
+@media (max-width: 520px) {
+  .pitch .shirt { width: 30px; height: 24px; font-size: 16px; }
+  .pitch .slot .nm { font-size: 14px; }
+  .slot .pa, .slot .pa .pos { font-size: 12px; }
+  .slot .pa .bar { font-size: 9px; }
+}
