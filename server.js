@@ -60,6 +60,32 @@ CREATE TABLE IF NOT EXISTS lineups (
 );
 `);
 
+db.exec(`
+CREATE TABLE IF NOT EXISTS goals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  match_id INTEGER NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
+  team TEXT NOT NULL,                       -- team credited with the goal (A/B)
+  scorer_id INTEGER REFERENCES players(id) ON DELETE SET NULL,
+  assist_id INTEGER REFERENCES players(id) ON DELETE SET NULL,
+  own_goal INTEGER NOT NULL DEFAULT 0,      -- 1 = scorer played for the other team
+  created_by INTEGER REFERENCES players(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE TABLE IF NOT EXISTS motm_votes (
+  match_id INTEGER NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
+  voter_id INTEGER NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+  player_id INTEGER NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+  PRIMARY KEY (match_id, voter_id)
+);
+`);
+// column migrations for databases created by older versions
+const addCol = (table, col, def) => {
+  if (!db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`);
+};
+addCol('attendance', 'paid', 'INTEGER NOT NULL DEFAULT 0');
+addCol('matches', 'kicked_off_at', 'TEXT');
+addCol('matches', 'ended_at', 'TEXT');
+
 // ---------- helpers ----------
 const normPhone = (p) => {
   let d = String(p || '').replace(/\D/g, '');
@@ -189,18 +215,46 @@ const pubPlayer = (p, admin) => ({
   ...(admin ? { phone: p.phone } : {}),
 });
 
+// ---- man of the match ----
+const VOTE_HOURS = 24;
+const voteClosesAt = (m) => {
+  if (m.status !== 'played') return null;
+  const base = m.ended_at ? new Date(m.ended_at) : new Date(m.starts_at + ':00Z');
+  return new Date(base.getTime() + VOTE_HOURS * 3600e3).toISOString();
+};
+const playedIds = (matchId) => new Set(db.prepare('SELECT player_id FROM lineups WHERE match_id=?').all(matchId).map((r) => r.player_id));
+const motmWinners = (matchId) => {
+  const rows = db.prepare('SELECT player_id, COUNT(*) AS n FROM motm_votes WHERE match_id=? GROUP BY player_id ORDER BY n DESC').all(matchId);
+  if (!rows.length) return [];
+  return rows.filter((r) => r.n === rows[0].n).map((r) => r.player_id);
+};
+const motmInfo = (m, user) => {
+  const closes = voteClosesAt(m);
+  if (!closes) return null;
+  const open = new Date() < new Date(closes);
+  const played = playedIds(m.id);
+  const mine = db.prepare('SELECT player_id FROM motm_votes WHERE match_id=? AND voter_id=?').get(m.id, user.id);
+  const total = db.prepare('SELECT COUNT(*) AS n FROM motm_votes WHERE match_id=?').get(m.id).n;
+  const counts = open ? null : Object.fromEntries(db.prepare('SELECT player_id, COUNT(*) AS n FROM motm_votes WHERE match_id=? GROUP BY player_id').all(m.id).map((r) => [r.player_id, r.n]));
+  return { open, closes_at: closes, can_vote: open && played.has(user.id), my_vote: mine ? mine.player_id : null,
+    votes: total, voters: played.size, counts, winners: open ? [] : motmWinners(m.id) };
+};
+
 const matchDetail = (id, user) => {
   const m = db.prepare('SELECT * FROM matches WHERE id=?').get(id);
   if (!m) throw new HttpError(404, 'Match not found');
-  const att = db.prepare(`SELECT a.player_id, a.status, a.updated_at FROM attendance a JOIN players p ON p.id=a.player_id
+  const att = db.prepare(`SELECT a.player_id, a.status, a.updated_at, a.paid FROM attendance a JOIN players p ON p.id=a.player_id
     WHERE a.match_id=? AND p.active=1 ORDER BY a.updated_at ASC`).all(id);
   const cap = m.team_size * 2;
   let n = 0;
-  const attendance = att.map((a) => ({ player_id: a.player_id, status: a.status, at: a.updated_at, reserve: a.status === 'in' ? ++n > cap : false }));
+  const attendance = att.map((a) => ({ player_id: a.player_id, status: a.status, at: a.updated_at, paid: !!a.paid, reserve: a.status === 'in' ? ++n > cap : false }));
   const showLineup = m.lineup_published || user.is_admin;
   const lineup = showLineup ? db.prepare('SELECT player_id, team, slot FROM lineups WHERE match_id=?').all(id) : [];
   const mine = att.find((a) => a.player_id === user.id);
-  return { ...m, lineup_published: !!m.lineup_published, capacity: cap, attendance, lineup, my_status: mine ? mine.status : null };
+  const goals = db.prepare('SELECT id, team, scorer_id, assist_id, own_goal, created_by, created_at FROM goals WHERE match_id=? ORDER BY id').all(id)
+    .map((g) => ({ ...g, own_goal: !!g.own_goal }));
+  return { ...m, lineup_published: !!m.lineup_published, capacity: cap, attendance, lineup, goals,
+    motm: motmInfo(m, user), my_status: mine ? mine.status : null };
 };
 
 const requireAdmin = (u) => { if (!u.is_admin) throw new HttpError(403, 'Admins only'); };
@@ -328,8 +382,9 @@ route('PUT', '/api/matches/:id', (req, res, { user, body, params }) => {
   const ex = db.prepare('SELECT * FROM matches WHERE id=?').get(params.id);
   if (!ex) throw new HttpError(404, 'Match not found');
   const f = matchFields(body, ex);
-  db.prepare(`UPDATE matches SET starts_at=?, location=?, team_size=?, team_a_name=?, team_b_name=?, notes=?, status=?, score_a=?, score_b=? WHERE id=?`)
-    .run(f.starts_at, f.location, f.team_size, f.team_a_name, f.team_b_name, f.notes, f.status, f.score_a, f.score_b, ex.id);
+  const ended_at = f.status === 'played' ? (ex.ended_at || new Date().toISOString()) : null;
+  db.prepare(`UPDATE matches SET starts_at=?, location=?, team_size=?, team_a_name=?, team_b_name=?, notes=?, status=?, score_a=?, score_b=?, ended_at=? WHERE id=?`)
+    .run(f.starts_at, f.location, f.team_size, f.team_a_name, f.team_b_name, f.notes, f.status, f.score_a, f.score_b, ended_at, ex.id);
   send(res, 200, { ok: true });
 });
 
@@ -384,6 +439,103 @@ route('PUT', '/api/matches/:id/lineup', (req, res, { user, body, params }) => {
   send(res, 200, { match: matchDetail(m.id, user) });
 });
 
+// ---------- routes: paid checkbox ----------
+route('POST', '/api/matches/:id/paid', (req, res, { user, body, params }) => {
+  requireAdmin(user);
+  const r = db.prepare('UPDATE attendance SET paid=? WHERE match_id=? AND player_id=?').run(body.paid ? 1 : 0, Number(params.id), Number(body.player_id));
+  if (!r.changes) bad('That player has not signed up for this match');
+  send(res, 200, { match: matchDetail(Number(params.id), user) });
+});
+
+// ---------- routes: live goals (any logged-in player) ----------
+const syncScore = (matchId) => {
+  const c = db.prepare(`SELECT SUM(team='A') AS a, SUM(team='B') AS b, COUNT(*) AS n FROM goals WHERE match_id=?`).get(matchId);
+  db.prepare('UPDATE matches SET score_a=?, score_b=? WHERE id=?').run(c.a || 0, c.b || 0, matchId);
+};
+const liveMatch = (id) => {
+  const m = db.prepare('SELECT * FROM matches WHERE id=?').get(id);
+  if (!m) throw new HttpError(404, 'Match not found');
+  if (m.status === 'cancelled') bad('This match was cancelled');
+  return m;
+};
+
+route('POST', '/api/matches/:id/kickoff', (req, res, { user, params }) => {
+  const m = liveMatch(Number(params.id));
+  if (!m.lineup_published) bad('Teams are not published yet');
+  if (!m.kicked_off_at) {
+    db.prepare('UPDATE matches SET kicked_off_at=? WHERE id=?').run(new Date().toISOString(), m.id);
+    if (m.score_a == null) db.prepare('UPDATE matches SET score_a=0, score_b=0 WHERE id=?').run(m.id);
+  }
+  send(res, 200, { match: matchDetail(m.id, user) });
+});
+
+route('POST', '/api/matches/:id/goals', (req, res, { user, body, params }) => {
+  const m = liveMatch(Number(params.id));
+  const lineup = Object.fromEntries(db.prepare('SELECT player_id, team FROM lineups WHERE match_id=?').all(m.id).map((l) => [l.player_id, l.team]));
+  const scorer = Number(body.scorer_id);
+  const sTeam = lineup[scorer];
+  if (!sTeam) bad('Scorer is not in the line-up');
+  const own = !!body.own_goal;
+  const team = own ? (sTeam === 'A' ? 'B' : 'A') : sTeam;
+  let assist = body.assist_id == null || body.assist_id === '' ? null : Number(body.assist_id);
+  if (own) assist = null;
+  if (assist != null && (lineup[assist] !== sTeam || assist === scorer)) bad('Assist must be a team-mate');
+  const recent = db.prepare(`SELECT id FROM goals WHERE match_id=? AND scorer_id=? AND own_goal=? AND created_at > strftime('%Y-%m-%dT%H:%M:%fZ','now','-20 seconds')`).get(m.id, scorer, own ? 1 : 0);
+  if (recent) throw new HttpError(409, 'Someone just recorded that goal');
+  if (!m.kicked_off_at) db.prepare('UPDATE matches SET kicked_off_at=? WHERE id=?').run(new Date().toISOString(), m.id);
+  db.prepare('INSERT INTO goals(match_id, team, scorer_id, assist_id, own_goal, created_by) VALUES(?,?,?,?,?,?)')
+    .run(m.id, team, scorer, assist, own ? 1 : 0, user.id);
+  syncScore(m.id);
+  send(res, 201, { match: matchDetail(m.id, user) });
+});
+
+route('PUT', '/api/matches/:id/goals/:gid', (req, res, { user, body, params }) => {
+  const m = liveMatch(Number(params.id));
+  const g = db.prepare('SELECT * FROM goals WHERE id=? AND match_id=?').get(Number(params.gid), m.id);
+  if (!g) throw new HttpError(404, 'Goal not found');
+  const assist = body.assist_id == null || body.assist_id === '' ? null : Number(body.assist_id);
+  if (assist != null) {
+    const t = db.prepare('SELECT team FROM lineups WHERE match_id=? AND player_id=?').get(m.id, assist)?.team;
+    if (g.own_goal || t !== g.team || assist === g.scorer_id) bad('Assist must be a team-mate');
+  }
+  db.prepare('UPDATE goals SET assist_id=? WHERE id=?').run(assist, g.id);
+  send(res, 200, { match: matchDetail(m.id, user) });
+});
+
+route('DELETE', '/api/matches/:id/goals/:gid', (req, res, { user, params }) => {
+  const m = liveMatch(Number(params.id));
+  db.prepare('DELETE FROM goals WHERE id=? AND match_id=?').run(Number(params.gid), m.id);
+  syncScore(m.id);
+  send(res, 200, { match: matchDetail(m.id, user) });
+});
+
+route('POST', '/api/matches/:id/fulltime', (req, res, { user, params }) => {
+  const m = liveMatch(Number(params.id));
+  if (!user.is_admin) {
+    const started = m.kicked_off_at ? new Date(m.kicked_off_at) : null;
+    if (!started || Date.now() - started.getTime() < 30 * 60e3) throw new HttpError(403, 'Only an admin can end the match this early');
+  }
+  if (m.status !== 'played') {
+    syncScore(m.id);
+    db.prepare(`UPDATE matches SET status='played', ended_at=? WHERE id=?`).run(new Date().toISOString(), m.id);
+  }
+  send(res, 200, { match: matchDetail(m.id, user) });
+});
+
+route('POST', '/api/matches/:id/motm', (req, res, { user, body, params }) => {
+  const m = db.prepare('SELECT * FROM matches WHERE id=?').get(Number(params.id));
+  if (!m) throw new HttpError(404, 'Match not found');
+  const info = motmInfo(m, user);
+  if (!info || !info.open) bad('Voting is closed');
+  if (!info.can_vote) bad('Only players who played can vote');
+  const pid = Number(body.player_id);
+  if (pid === user.id) bad("You can't vote for yourself");
+  if (!playedIds(m.id).has(pid)) bad('That player did not play');
+  db.prepare(`INSERT INTO motm_votes(match_id, voter_id, player_id) VALUES(?,?,?)
+    ON CONFLICT(match_id, voter_id) DO UPDATE SET player_id=excluded.player_id`).run(m.id, user.id, pid);
+  send(res, 200, { match: matchDetail(m.id, user) });
+});
+
 // ---------- routes: stats ----------
 route('GET', '/api/stats', (req, res) => {
   const rows = db.prepare(`
@@ -403,10 +555,19 @@ route('GET', '/api/stats', (req, res) => {
     JOIN matches m ON m.id=a.match_id WHERE m.status<>'cancelled' GROUP BY a.player_id`).all();
   const sMap = Object.fromEntries(signups.map((s) => [s.player_id, s]));
   const total = db.prepare(`SELECT COUNT(*) AS n FROM matches WHERE status='played'`).get().n;
+  const gMap = Object.fromEntries(db.prepare(`SELECT g.scorer_id AS id, COUNT(*) AS n FROM goals g JOIN matches m ON m.id=g.match_id
+    WHERE g.own_goal=0 AND m.status<>'cancelled' GROUP BY g.scorer_id`).all().map((r) => [r.id, r.n]));
+  const aMap = Object.fromEntries(db.prepare(`SELECT g.assist_id AS id, COUNT(*) AS n FROM goals g JOIN matches m ON m.id=g.match_id
+    WHERE g.assist_id IS NOT NULL AND m.status<>'cancelled' GROUP BY g.assist_id`).all().map((r) => [r.id, r.n]));
+  const mMap = {};
+  for (const m of db.prepare(`SELECT * FROM matches WHERE status='played'`).all()) {
+    const c = voteClosesAt(m);
+    if (c && new Date() >= new Date(c)) for (const pid of motmWinners(m.id)) mMap[pid] = (mMap[pid] || 0) + 1;
+  }
   send(res, 200, {
     total_played: total,
     players: rows.map((r) => ({ ...r, won: r.won || 0, drawn: r.drawn || 0, lost: r.lost || 0, gf: r.gf || 0, ga: r.ga || 0,
-      signed_in: sMap[r.id]?.ins || 0, signed_out: sMap[r.id]?.outs || 0 })),
+      signed_in: sMap[r.id]?.ins || 0, signed_out: sMap[r.id]?.outs || 0, goals: gMap[r.id] || 0, assists: aMap[r.id] || 0, motm: mMap[r.id] || 0 })),
   });
 });
 

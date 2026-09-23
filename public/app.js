@@ -79,7 +79,7 @@ function shell(active) {
   const me = S.me;
   return `
   <header class="topbar">
-    <div class="pageline"><span class="w">P${(TABS.find((t) => t.id === active) || TABS[0]).page}</span><span class="c">FUDBAL</span><span class="y clock">${clockText()}</span></div>
+    <div class="pageline"><span class="w">P${location.hash.startsWith('#/live') ? 310 : (TABS.find((t) => t.id === active) || TABS[0]).page}</span><span class="c">FUDBAL</span><span class="y clock">${clockText()}</span></div>
     <div class="titleband"><span class="dh">FUDBAL TEXT</span><span class="who"><span class="c">${esc(me.name.toUpperCase())}</span>${me.is_admin ? ' <span class="m">ADMIN</span>' : ''} <button class="linkbtn" id="logout">[EXIT]</button></span></div>
   </header>
   <main id="view"></main>
@@ -99,6 +99,7 @@ async function route() {
   try {
     if (page === 'match') await viewMatch(arg ? Number(arg) : null);
     else if (page === 'tactics') await viewTactics(arg ? Number(arg) : null);
+    else if (page === 'live' && arg) await viewLive(Number(arg));
     else if (page === 'fixtures') await viewFixtures();
     else if (page === 'stats') await viewStats();
     else if (page === 'admin' && S.me.is_admin) await viewAdmin(arg || 'squad', arg2);
@@ -166,11 +167,15 @@ function squadRows(m) {
     const cur = st === 'res' ? 'in' : st;
     const ctl = admin ? `<select class="admin-status" data-pid="${pid}">
         <option value="none" ${cur === 'none' ? 'selected' : ''}>–</option><option value="in" ${cur === 'in' ? 'selected' : ''}>In</option><option value="out" ${cur === 'out' ? 'selected' : ''}>Out</option></select>` : '';
-    return `<tr class="${pid === S.me.id ? 'sel' : ''}"><td class="num dim">${i ?? ''}</td><td>${icon}</td><td class="name">${esc(p.name)}</td><td>${posBadge(p.position)}</td><td class="hide-sm">${stars(p.rating)}</td><td class="num">${ctl}</td></tr>`;
+    const a = byPid[pid];
+    const paid = st === 'in' || st === 'res' || (a && a.paid)
+      ? (admin ? `<button class="paytog ${a.paid ? 'on' : 'off'}" data-paid="${pid}" data-v="${a.paid ? 0 : 1}">${a.paid ? 'PAID' : 'PAID?'}</button>`
+        : a.paid ? '<span class="g">PAID</span>' : '') : '';
+    return `<tr class="${pid === S.me.id ? 'sel' : ''}"><td class="num dim">${i ?? ''}</td><td>${icon}</td><td class="name">${esc(p.name)}</td><td class="hide-sm">${posBadge(p.position)}</td><td class="hide-sm">${stars(p.rating)}</td><td>${paid}</td><td class="num">${ctl}</td></tr>`;
   };
-  const div = (t, n) => `<tr class="divider"><td colspan="6">${t} (${n})</td></tr>`;
+  const div = (t, n) => `<tr class="divider"><td colspan="7">${t} (${n})</td></tr>`;
   return `
-  ${div('Playing', ins.length)}${ins.map((a, i) => row(a.player_id, 'in', i + 1)).join('') || '<tr><td colspan="6" class="muted">Nobody yet — be the first!</td></tr>'}
+  ${div('Playing', ins.length)}${ins.map((a, i) => row(a.player_id, 'in', i + 1)).join('') || '<tr><td colspan="7" class="muted">Nobody yet — be the first!</td></tr>'}
   ${res.length ? div('Reserves (waiting list)', res.length) + res.map((a, i) => row(a.player_id, 'res', i + 1)).join('') : ''}
   ${div('Not coming', outs.length)}${outs.map((a) => row(a.player_id, 'out')).join('')}
   ${none.length ? div('No reply', none.length) + none.map((p) => row(p.id, 'none')).join('') : ''}`;
@@ -208,14 +213,18 @@ async function viewMatch(id) {
                 mine.status === 'in' ? '<span class="g flash">YOU\'RE IN.</span> See you on the pitch!' : 'You\'re marked as not coming.'}</div>` : ''}
           </div>
         </div>
+        ${m.goals.length ? `<div class="panel"><div class="panel-h">Goals</div><div class="panel-b">${scorersHtml(m)}</div></div>` : ''}
+        ${m.motm ? motmHtml(m) : ''}
         <div class="panel"><div class="panel-h">Teams</div><div class="panel-b">
-          ${m.lineup_published ? `<p>Line-ups are out!</p><a class="btn primary" href="#/tactics/${m.id}">View line-up ›</a>`
+          ${m.lineup_published ? `<div class="btn-row"><a class="btn" href="#/tactics/${m.id}">View line-up ›</a>
+              ${m.status !== 'cancelled' ? `<a class="btn ${m.status === 'upcoming' ? 'danger live-btn' : 'ghost'}" href="#/live/${m.id}">${m.status === 'upcoming' ? '● Live score' : 'Edit goals'}</a>` : ''}</div>`
             : S.me.is_admin ? `<p class="muted">Teams not published yet.</p><a class="btn primary" href="#/tactics/${m.id}">Pick teams ›</a>`
             : '<p class="muted">The manager hasn\'t announced the teams yet.</p>'}
         </div></div>
       </div>
-      <div class="panel"><div class="panel-h">Squad<span class="spacer"></span><span class="sub">first come, first served</span></div>
-        <div class="table-wrap"><table class="fm"><thead><tr><th class="num">#</th><th></th><th>Name</th><th>Pos</th><th class="hide-sm">Ability</th><th></th></tr></thead>
+      <div class="panel"><div class="panel-h">Squad<span class="spacer"></span><span class="sub">${S.me.is_admin && m.attendance.some((a) => a.status === 'in')
+          ? `${m.attendance.filter((a) => a.status === 'in' && a.paid).length}/${m.attendance.filter((a) => a.status === 'in').length} paid` : 'first come, first served'}</span></div>
+        <div class="table-wrap"><table class="fm"><thead><tr><th class="num">#</th><th></th><th>Name</th><th class="hide-sm">Pos</th><th class="hide-sm">Ability</th><th>Paid</th><th></th></tr></thead>
         <tbody>${squadRows(m)}</tbody></table></div>
       </div>
     </div>`;
@@ -226,10 +235,170 @@ async function viewMatch(id) {
     $$('.admin-status', v).forEach((s) => (s.onchange = async () => {
       try { const r = await api('POST', `/api/matches/${m.id}/attendance`, { status: s.value, player_id: Number(s.dataset.pid) }); render(r.match); toast('Updated'); } catch (e) { fail(e); }
     }));
+    $$('[data-paid]', v).forEach((b) => (b.onclick = async () => {
+      try { const r = await api('POST', `/api/matches/${m.id}/paid`, { player_id: Number(b.dataset.paid), paid: b.dataset.v === '1' }); render(r.match); } catch (e) { fail(e); }
+    }));
+    $$('[data-vote]', v).forEach((b) => (b.onclick = async () => {
+      try { const r = await api('POST', `/api/matches/${m.id}/motm`, { player_id: Number(b.dataset.vote) }); render(r.match); toast('Vote saved'); } catch (e) { fail(e); }
+    }));
     const sh = $('#share', v);
     if (sh) sh.onclick = () => shareMatch(m);
   };
   render(m);
+}
+
+// ---------- goals / motm helpers ----------
+const pname = (id) => (id && S.pmap[id] ? shortName(S.pmap[id].name) : '?');
+function goalTally(m) {
+  const g = {}, a = {};
+  for (const x of m.goals) {
+    if (!x.own_goal && x.scorer_id) g[x.scorer_id] = (g[x.scorer_id] || 0) + 1;
+    if (x.assist_id) a[x.assist_id] = (a[x.assist_id] || 0) + 1;
+  }
+  return { g, a };
+}
+function scorersHtml(m) {
+  const side = (team) => {
+    const list = [];
+    const seen = {};
+    for (const x of m.goals.filter((x) => x.team === team)) {
+      const key = x.own_goal ? `og${x.scorer_id}` : x.scorer_id;
+      if (seen[key]) { seen[key].n++; continue; }
+      seen[key] = { n: 1, name: pname(x.scorer_id) + (x.own_goal ? ' (OG)' : '') }; list.push(seen[key]);
+    }
+    return list.map((s) => `${esc(s.name.toUpperCase())}${s.n > 1 ? ' ' + s.n : ''}`).join(', ') || '<span class="dim">—</span>';
+  };
+  return `<div class="scorers"><div><span class="chip-team A"></span> <b class="y">${m.score_a ?? 0}</b> ${side('A')}</div>
+    <div><span class="chip-team B"></span> <b class="y">${m.score_b ?? 0}</b> ${side('B')}</div></div>`;
+}
+function motmHtml(m) {
+  const mo = m.motm;
+  const played = [...new Set(m.lineup.map((l) => l.player_id))];
+  const { g, a } = goalTally(m);
+  const badge = (pid) => `${'⚽'.repeat(g[pid] || 0)}${' A'.repeat(a[pid] || 0)}`;
+  const closes = new Date(mo.closes_at);
+  if (!mo.open) {
+    if (!mo.winners.length) return `<div class="panel"><div class="panel-h">Man of the match</div><div class="panel-b muted">No votes were cast.</div></div>`;
+    const ranked = Object.entries(mo.counts).sort((x, y) => y[1] - x[1]).slice(0, 5);
+    return `<div class="panel"><div class="panel-h" style="background:var(--ma);color:#fff">★ Man of the match</div><div class="panel-b">
+      <div class="motm-win flash-once">${mo.winners.map((w) => esc((S.pmap[w]?.name || '?').toUpperCase())).join(' &amp; ')}</div>
+      <table class="fm"><tbody>${ranked.map(([pid, n]) => `<tr><td class="name">${esc(S.pmap[pid]?.name || '?')}</td><td class="num y">${n} vote${n > 1 ? 's' : ''}</td></tr>`).join('')}</tbody></table></div></div>`;
+  }
+  return `<div class="panel"><div class="panel-h" style="background:var(--ma);color:#fff">★ Vote: man of the match</div><div class="panel-b">
+    <p class="muted" style="margin-top:0">${mo.can_vote ? 'You played — pick one (not yourself).' : 'Only players who played can vote.'}
+    Closes ${DAYS[closes.getDay()]} ${fmtTime(closes.toISOString())}. <span class="y">${mo.votes}/${mo.voters} voted</span></p>
+    ${mo.can_vote ? played.filter((pid) => pid !== S.me.id && S.pmap[pid]).map((pid) =>
+      `<button class="pbtn ${mo.my_vote === pid ? 'me' : ''}" data-vote="${pid}">${esc(S.pmap[pid].name)}<span class="g">${badge(pid)}${mo.my_vote === pid ? ' ✓ YOUR VOTE' : ''}</span></button>`).join('') : ''}
+  </div></div>`;
+}
+
+// ---------- live scoring ----------
+let livePoll = null;
+async function viewLive(id) {
+  const v = mount('match');
+  await loadPlayers();
+  let m = (await api('GET', `/api/matches/${id}`)).match;
+  let sheet = null; // { scorer, team, goalId? }
+  let busy = false;
+
+  const minute = (iso) => {
+    if (!m.kicked_off_at) return '';
+    const d = Math.floor((new Date(iso) - new Date(m.kicked_off_at)) / 60000) + 1;
+    return d > 0 && d < 200 ? d + "'" : '';
+  };
+  const teamList = (team) => m.lineup.filter((l) => l.team === team).sort((x, y) => x.slot - y.slot).map((l) => l.player_id).filter((pid) => S.pmap[pid]);
+
+  const draw = () => {
+    if (!m.lineup_published || !m.lineup.length) {
+      v.innerHTML = `<div class="panel"><div class="panel-h">Live score</div><div class="empty-state"><div class="ico">NO TEAMS</div>
+        <p>Teams have to be published before the match can be scored.</p><a class="btn" href="#/match/${m.id}">‹ Back</a></div></div>`;
+      return;
+    }
+    const { g, a } = goalTally(m);
+    const ended = m.status === 'played';
+    const elapsed = m.kicked_off_at ? Math.max(0, Math.floor((Date.now() - new Date(m.kicked_off_at)) / 60000)) : null;
+    const col = (team) => `<div class="${team}"><h5>${esc(team === 'A' ? m.team_a_name : m.team_b_name)}</h5>
+      ${teamList(team).map((pid) => `<button class="pbtn ${sheet && sheet.scorer === pid ? 'hot' : ''}" data-scorer="${pid}" data-team="${team}">
+        <span class="pn">${esc(shortName(S.pmap[pid].name))}</span><span class="g">${'⚽'.repeat(g[pid] || 0)}${' A'.repeat(a[pid] || 0)}</span></button>`).join('')}</div>`;
+    const feed = [...m.goals].reverse().map((x) => `<div class="fi" data-goal="${x.id}">
+        <span class="min">${minute(x.created_at)}</span><span class="chip-team ${x.team}"></span>
+        <span class="what">${esc(pname(x.scorer_id).toUpperCase())}${x.own_goal ? ' <span class="r">OG</span>' : ''}${x.assist_id ? ` <span class="c">(${esc(pname(x.assist_id))})</span>` : ''}</span>
+        <span class="by dim">by ${esc(pname(x.created_by))}</span><button class="x" data-del="${x.id}" title="Undo">✕</button></div>`).join('');
+
+    let sheetHtml = '';
+    if (sheet) {
+      const mates = teamList(sheet.team).filter((pid) => pid !== sheet.scorer);
+      const editing = sheet.goalId != null;
+      sheetHtml = `<div class="sheet-bg"></div><div class="sheet">
+        <h4>${editing ? 'Change assist for' : '⚽'} ${esc(pname(sheet.scorer).toUpperCase())}${editing ? '' : ' scores!'} ${editing ? '' : 'Assist?'}</h4>
+        <div class="grid">${mates.map((pid) => `<button class="btn" data-assist="${pid}">${esc(shortName(S.pmap[pid].name))}</button>`).join('')}
+          <button class="btn ghost" data-assist="">No assist</button></div>
+        <div class="sheet-foot">${editing ? '' : `<button class="btn sm danger" id="og">Own goal</button>`}<span class="spacer"></span><button class="btn sm ghost" id="cancel">Cancel</button></div>
+      </div>`;
+    }
+
+    v.innerHTML = `
+    <div class="live">
+      <div class="panel-h" style="background:${ended ? 'var(--gr)' : 'var(--re)'};color:${ended ? '#000' : '#fff'}">${ended ? 'Full time' : m.kicked_off_at ? '<span class="flash">●</span> Live' : 'Ready'}
+        <span class="spacer"></span><span class="sub">${fmtShort(m.starts_at)}</span></div>
+      <div class="sb"><div class="t ta">${esc(m.team_a_name)}</div><div class="s">${m.score_a ?? 0}-${m.score_b ?? 0}</div><div class="t tb">${esc(m.team_b_name)}</div></div>
+      <div class="clk">${ended ? 'FULL TIME' : elapsed != null ? `${elapsed}' · tap the scorer` : 'Tap a scorer to start the clock'}</div>
+      <div class="cols">${col('A')}${col('B')}</div>
+      ${m.goals.length ? `<div class="panel-h" style="margin-top:12px">Goals<span class="spacer"></span><span class="sub">tap to fix assist · ✕ to undo</span></div><div class="feed">${feed}</div>` : ''}
+      <div class="btn-row" style="margin-top:14px;justify-content:space-between">
+        <a class="btn ghost" href="#/match/${m.id}">‹ Match</a>
+        ${!ended ? `<button class="btn primary" id="ft">Full time</button>` : ''}
+      </div>
+    </div>${sheetHtml}`;
+
+    $$('[data-scorer]', v).forEach((b) => (b.onclick = () => { sheet = { scorer: Number(b.dataset.scorer), team: b.dataset.team }; draw(); }));
+    $$('[data-del]', v).forEach((b) => (b.onclick = async (e) => {
+      e.stopPropagation();
+      const x = m.goals.find((q) => q.id === Number(b.dataset.del));
+      if (!confirm(`Remove goal by ${pname(x?.scorer_id)}?`)) return;
+      try { m = (await api('DELETE', `/api/matches/${m.id}/goals/${b.dataset.del}`)).match; toast('Goal removed'); draw(); } catch (err) { fail(err); }
+    }));
+    $$('[data-goal]', v).forEach((row) => (row.onclick = () => {
+      const x = m.goals.find((q) => q.id === Number(row.dataset.goal));
+      if (!x || x.own_goal) return;
+      sheet = { scorer: x.scorer_id, team: x.team, goalId: x.id }; draw();
+    }));
+    $$('[data-assist]', v).forEach((b) => (b.onclick = async () => {
+      if (busy) return; busy = true;
+      const assist = b.dataset.assist ? Number(b.dataset.assist) : null;
+      try {
+        if (sheet.goalId != null) m = (await api('PUT', `/api/matches/${m.id}/goals/${sheet.goalId}`, { assist_id: assist })).match;
+        else { m = (await api('POST', `/api/matches/${m.id}/goals`, { scorer_id: sheet.scorer, assist_id: assist })).match; toast(`GOAL! ${pname(sheet.scorer)}`); }
+        sheet = null; draw();
+      } catch (err) { fail(err); } finally { busy = false; }
+    }));
+    const og = $('#og', v);
+    if (og) og.onclick = async () => {
+      if (busy) return; busy = true;
+      try { m = (await api('POST', `/api/matches/${m.id}/goals`, { scorer_id: sheet.scorer, own_goal: true })).match; toast('Own goal'); sheet = null; draw(); }
+      catch (err) { fail(err); } finally { busy = false; }
+    };
+    const cancel = $('#cancel', v); if (cancel) cancel.onclick = () => { sheet = null; draw(); };
+    const bg = $('.sheet-bg', v); if (bg) bg.onclick = () => { sheet = null; draw(); };
+    const ft = $('#ft', v);
+    if (ft) ft.onclick = async () => {
+      if (!confirm(`End the match at ${m.score_a ?? 0}-${m.score_b ?? 0}? Man-of-the-match voting opens.`)) return;
+      try { m = (await api('POST', `/api/matches/${m.id}/fulltime`)).match; location.hash = `#/match/${m.id}`; } catch (err) { fail(err); }
+    };
+  };
+  draw();
+
+  // keep in sync with other people scoring the same match
+  clearInterval(livePoll);
+  livePoll = setInterval(async () => {
+    if (!location.hash.startsWith(`#/live/${id}`)) { clearInterval(livePoll); return; }
+    if (document.hidden || sheet || busy) return;
+    try {
+      const fresh = (await api('GET', `/api/matches/${id}`)).match;
+      if (JSON.stringify(fresh.goals) !== JSON.stringify(m.goals) || fresh.status !== m.status || fresh.kicked_off_at !== m.kicked_off_at) { m = fresh; draw(); }
+      else { const c = $('.clk', v); if (c && m.kicked_off_at && m.status !== 'played') c.textContent = `${Math.floor((Date.now() - new Date(m.kicked_off_at)) / 60000)}' · tap the scorer`; }
+    } catch {}
+  }, 4000);
 }
 
 function shareMatch(m) {
@@ -486,21 +655,31 @@ async function viewStats() {
   const v = mount('stats');
   const { players, total_played } = await api('GET', '/api/stats');
   const rows = players.map((p) => ({ ...p, pct: p.played ? Math.round((p.won / p.played) * 100) : 0, pts: p.won * 3 + p.drawn, gd: p.gf - p.ga }));
+  // [key, label, numeric, hideOnPhone, cell]
   const cols = [
-    ['name', 'Player'], ['position', 'Pos'], ['played', 'Apps', 1], ['won', 'W', 1], ['drawn', 'D', 1], ['lost', 'L', 1],
-    ['pct', 'Win %', 1], ['gd', 'GD', 1], ['pts', 'Pts', 1], ['signed_in', 'Sign-ups', 1],
+    ['name', 'Player', 0, 0, (r) => `<td class="name">${esc(r.name)}</td>`],
+    ['position', 'Pos', 0, 1, (r) => `<td class="hide-sm">${posBadge(r.position)}</td>`],
+    ['played', 'Apps', 1, 0, (r) => `<td class="num">${r.played}</td>`],
+    ['won', 'W', 1, 0, (r) => `<td class="num">${r.won}</td>`],
+    ['drawn', 'D', 1, 1, (r) => `<td class="num hide-sm">${r.drawn}</td>`],
+    ['lost', 'L', 1, 0, (r) => `<td class="num">${r.lost}</td>`],
+    ['goals', 'G', 1, 0, (r) => `<td class="num y">${r.goals}</td>`],
+    ['assists', 'A', 1, 0, (r) => `<td class="num c">${r.assists}</td>`],
+    ['motm', '★', 1, 0, (r) => `<td class="num m">${r.motm}</td>`],
+    ['pct', 'Win %', 1, 1, (r) => `<td class="num hide-sm">${r.played ? r.pct + '%' : '–'}</td>`],
+    ['gd', 'GD', 1, 1, (r) => `<td class="num hide-sm">${r.gd > 0 ? '+' : ''}${r.gd}</td>`],
+    ['pts', 'Pts', 1, 0, (r) => `<td class="num"><b>${r.pts}</b></td>`],
+    ['signed_in', 'Sign-ups', 1, 1, (r) => `<td class="num hide-sm">${r.signed_in}</td>`],
   ];
   const draw = () => {
     const { key, dir } = statSort;
     rows.sort((a, b) => (typeof a[key] === 'string' ? a[key].localeCompare(b[key]) : a[key] - b[key]) * dir || b.pts - a.pts || a.name.localeCompare(b.name));
     v.innerHTML = `<div class="panel"><div class="panel-h">Player Stats<span class="spacer"></span><span class="sub">${total_played} matches played</span></div>
-      <div class="table-wrap"><table class="fm"><thead><tr><th class="num">#</th>${cols.map(([k, l, n]) =>
-        `<th class="sortable ${n ? 'num' : ''} ${k === key ? 'sorted' : ''}" data-k="${k}">${l}${k === key ? (dir < 0 ? ' ▾' : ' ▴') : ''}</th>`).join('')}</tr></thead>
-      <tbody>${rows.map((r, i) => `<tr class="${r.id === S.me.id ? 'sel' : ''}"><td class="num dim">${i + 1}</td><td class="name">${esc(r.name)}</td><td>${posBadge(r.position)}</td>
-        <td class="num">${r.played}</td><td class="num">${r.won}</td><td class="num">${r.drawn}</td><td class="num">${r.lost}</td>
-        <td class="num">${r.played ? r.pct + '%' : '–'}</td><td class="num">${r.gd > 0 ? '+' : ''}${r.gd}</td><td class="num"><b>${r.pts}</b></td><td class="num">${r.signed_in}</td></tr>`).join('')}
+      <div class="table-wrap"><table class="fm stats"><thead><tr><th class="num">#</th>${cols.map(([k, l, n, h]) =>
+        `<th class="sortable ${n ? 'num' : ''} ${h ? 'hide-sm' : ''} ${k === key ? 'sorted' : ''}" data-k="${k}">${l}${k === key ? (dir < 0 ? '▾' : '▴') : ''}</th>`).join('')}</tr></thead>
+      <tbody>${rows.map((r, i) => `<tr class="${r.id === S.me.id ? 'sel' : ''}"><td class="num dim">${i + 1}</td>${cols.map((c) => c[4](r)).join('')}</tr>`).join('')}
       </tbody></table></div>
-      <div class="panel-b muted" style="font-size:18px">Apps, W/D/L and goal difference count matches marked as played with a score, for players who were in the published line-up (subs included).</div></div>`;
+      <div class="panel-b muted" style="font-size:18px">Apps, W/D/L and GD: played matches with a score, for everyone in the line-up (subs included). G/A: goals and assists recorded live. ★: man-of-the-match wins.</div></div>`;
     $$('th[data-k]', v).forEach((th) => (th.onclick = () => {
       statSort = { key: th.dataset.k, dir: statSort.key === th.dataset.k ? -statSort.dir : (th.dataset.k === 'name' || th.dataset.k === 'position' ? 1 : -1) }; draw();
     }));

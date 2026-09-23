@@ -33,5 +33,8 @@ Backup = copy `fudbal.db` from the data folder.
 - **Login**: phone number + group password. Only numbers on the squad list can log in. `+381 64…`, `064…` and `0038164…` all match (last 8 digits compared). Stays logged in for a year.
 - **Next Match**: big IN / OUT buttons. First come, first served — anyone past `2 × team size` goes on the waiting list and moves up automatically when someone drops out. Admins can set anyone's status (for people who still reply in WhatsApp).
 - **Line-up** (admin): pick a formation per team, tap a player then tap a position (drag & drop on desktop), 4 sub slots per side. **Auto-balance** splits players by ability and keeps goalkeepers apart. Save as draft (admins only) or **Publish**, then **Share** the teams to WhatsApp.
+- **Live score**: once teams are published, anyone logged in opens **● Live score** on the match page, taps the scorer and then the assist (or *No assist* / *Own goal*). Everyone watching sees the same score, refreshed every few seconds. Tap a goal to fix its assist, ✕ to undo. **Full time** is available to admins, and to anyone 30+ minutes after kick-off.
+- **Man of the match**: after full time, players who were in the line-up vote (not for themselves) for 24 hours; the winner shows on the match page and as ★ in the stats.
+- **Paid**: admins tap PAID? next to each player on the match page; the Squad header shows e.g. `8/12 paid`.
 - **Fixtures / Stats**: after the game set the match to *played* + score. Stats table: apps, W/D/L, win %, goal difference, points, sign-ups.
 - **Admin**: squad (add / bulk add / edit phone, position, ability 1–5, admin flag, deactivate), matches, group password, invite link.
