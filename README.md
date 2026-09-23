@@ -12,7 +12,7 @@ ADMIN_PHONE="+381641234567" ADMIN_NAME="Aleksandar" GROUP_PASSWORD="yourpassword
 ```
 
 `ADMIN_PHONE` / `ADMIN_NAME` create the first admin (only when the database is empty).
-`GROUP_PASSWORD` sets the initial shared password (default `fudbal`); change it later in **Admin → Settings**.
+`ADMIN_PIN` (4–8 digits) is your personal admin PIN. `GROUP_PASSWORD` sets the initial shared password (default `fudbal`); change it later in **Admin → Settings**.
 
 ## Deploy (pick one)
 
@@ -36,5 +36,10 @@ Backup = copy `fudbal.db` from the data folder.
 - **Live score**: once teams are published, anyone logged in opens **● Live score** on the match page, taps the scorer and then the assist (or *No assist* / *Own goal*). Everyone watching sees the same score, refreshed every few seconds. Tap a goal to fix its assist, ✕ to undo. **Full time** is available to admins, and to anyone 30+ minutes after kick-off.
 - **Man of the match**: after full time, players who were in the line-up vote (not for themselves) for 24 hours; the winner shows on the match page and as ★ in the stats.
 - **Paid**: admins tap PAID? next to each player on the match page; the Squad header shows e.g. `8/12 paid`.
+- **Admin PIN**: admins log in with number + group password + a personal PIN (tap *[ADMIN? ENTER PIN]* on the login screen). Without the PIN they're a normal player. Set your own with the `ADMIN_PIN` variable (4–8 digits); give other admins a PIN in Admin → Squad.
+- **Guests**: any player can tap **+ Guest** on the match page to add a one-off player (no login). Guests take a spot, can be picked in the line-up, score and win MOTM, but don't appear in the season table. The inviter or an admin can remove them. Returning guests are picked from a list; add a phone number in Admin → Squad to make one a member.
+- **Player profile**: tap any name for form (last 5), goals, assists, MOTM, win rate and best partner.
+- **Match report**: after full time, **Share report** posts a Teletext-style result to WhatsApp.
+- **Backup**: Admin → Settings → **Download backup** saves the whole database as one file.
 - **Fixtures / Stats**: after the game set the match to *played* + score. Stats table: apps, W/D/L, win %, goal difference, points, sign-ups.
 - **Admin**: squad (add / bulk add / edit phone, position, ability 1–5, admin flag, deactivate), matches, group password, invite link.

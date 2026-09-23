@@ -79,8 +79,8 @@ function shell(active) {
   const me = S.me;
   return `
   <header class="topbar">
-    <div class="pageline"><span class="w">P${location.hash.startsWith('#/live') ? 310 : (TABS.find((t) => t.id === active) || TABS[0]).page}</span><span class="c">FUDBAL</span><span class="y clock">${clockText()}</span></div>
-    <div class="titleband"><span class="dh">FUDBAL TEXT</span><span class="who"><span class="c">${esc(me.name.toUpperCase())}</span>${me.is_admin ? ' <span class="m">ADMIN</span>' : ''} <button class="linkbtn" id="logout">[EXIT]</button></span></div>
+    <div class="pageline"><span class="w">P${location.hash.startsWith('#/live') ? 310 : location.hash.startsWith('#/player') ? 306 : (TABS.find((t) => t.id === active) || TABS[0]).page}</span><span class="c">FUDBAL</span><span class="y clock">${clockText()}</span></div>
+    <div class="titleband"><span class="dh">FUDBAL TEXT</span><span class="who"><span class="c">${esc(me.name.toUpperCase())}</span>${me.is_admin ? ' <span class="m">ADMIN</span>' : me.admin_account ? ' <button class="linkbtn m" id="adminpin">[ADMIN]</button>' : ''} <button class="linkbtn" id="logout">[EXIT]</button></span></div>
   </header>
   <main id="view"></main>
   <nav class="tabs fastext">${TABS.filter((t) => !t.admin || me.is_admin).map((t) =>
@@ -89,6 +89,8 @@ function shell(active) {
 function mount(active) {
   app.innerHTML = shell(active);
   $('#logout').onclick = async () => { await api('POST', '/api/logout').catch(() => {}); S.me = null; location.hash = ''; renderLogin(); };
+  const ap = $('#adminpin');
+  if (ap) ap.onclick = async () => { await api('POST', '/api/logout').catch(() => {}); S.me = null; S.wantPin = true; renderLogin(); toast('Log in again with your admin PIN'); };
   return $('#view');
 }
 
@@ -100,6 +102,7 @@ async function route() {
     if (page === 'match') await viewMatch(arg ? Number(arg) : null);
     else if (page === 'tactics') await viewTactics(arg ? Number(arg) : null);
     else if (page === 'live' && arg) await viewLive(Number(arg));
+    else if (page === 'player' && arg) await viewProfile(Number(arg));
     else if (page === 'fixtures') await viewFixtures();
     else if (page === 'stats') await viewStats();
     else if (page === 'admin' && S.me.is_admin) await viewAdmin(arg || 'squad', arg2);
@@ -119,16 +122,20 @@ function renderLogin() {
       <form id="lf">
         <label class="f"><span>Your phone number (as in WhatsApp)</span><input type="tel" name="phone" autocomplete="tel" placeholder="+381 64 123 4567" required></label>
         <label class="f"><span>Group password</span><input type="password" name="password" autocomplete="current-password" required></label>
+        <label class="f" id="pinrow" ${S.wantPin ? '' : 'hidden'}><span class="m">Admin PIN</span><input type="password" name="pin" inputmode="numeric" autocomplete="off" placeholder="only for admins"></label>
         <div class="err" id="lerr"></div>
         <button class="btn primary" style="width:100%;min-height:48px;font-size:28px">Continue ›</button>
+        <p style="text-align:center;margin:14px 0 0"><button type="button" class="linkbtn m" id="pinlink" ${S.wantPin ? 'hidden' : ''}>[ADMIN? ENTER PIN]</button></p>
       </form>
     </div></div>
   </div></div>`;
   try { const saved = localStorage.getItem('fm_phone'); if (saved) $('#lf').phone.value = saved; } catch {}
+  $('#pinlink').onclick = () => { $('#pinrow').hidden = false; $('#pinlink').hidden = true; $('#lf').pin.focus(); };
   $('#lf').onsubmit = async (e) => {
     e.preventDefault(); const f = e.target; $('#lerr').textContent = '';
     try {
-      const { user } = await api('POST', '/api/login', { phone: f.phone.value, password: f.password.value });
+      const { user } = await api('POST', '/api/login', { phone: f.phone.value, password: f.password.value, pin: f.pin.value });
+      S.wantPin = false;
       try { localStorage.setItem('fm_phone', f.phone.value); } catch {}
       S.me = user; route();
     } catch (err) { $('#lerr').textContent = err.message; }
@@ -159,19 +166,19 @@ function squadRows(m) {
   const ins = m.attendance.filter((a) => a.status === 'in' && !a.reserve);
   const res = m.attendance.filter((a) => a.reserve);
   const outs = m.attendance.filter((a) => a.status === 'out');
-  const none = S.players.filter((p) => p.active && !byPid[p.id]);
+  const none = S.players.filter((p) => p.active && !p.is_guest && !byPid[p.id]);
   const admin = S.me.is_admin;
   const row = (pid, st, i) => {
     const p = S.pmap[pid]; if (!p) return '';
     const icon = st === 'in' ? '<span class="st in">IN</span>' : st === 'res' ? '<span class="st res">RES</span>' : st === 'out' ? '<span class="st out">OUT</span>' : '<span class="st none">???</span>';
     const cur = st === 'res' ? 'in' : st;
-    const ctl = admin ? `<select class="admin-status" data-pid="${pid}">
+    const ctl = admin && !p.is_guest ? `<select class="admin-status" data-pid="${pid}">
         <option value="none" ${cur === 'none' ? 'selected' : ''}>–</option><option value="in" ${cur === 'in' ? 'selected' : ''}>In</option><option value="out" ${cur === 'out' ? 'selected' : ''}>Out</option></select>` : '';
     const a = byPid[pid];
     const paid = st === 'in' || st === 'res' || (a && a.paid)
       ? (admin ? `<button class="paytog ${a.paid ? 'on' : 'off'}" data-paid="${pid}" data-v="${a.paid ? 0 : 1}">${a.paid ? 'PAID' : 'PAID?'}</button>`
         : a.paid ? '<span class="g">PAID</span>' : '') : '';
-    return `<tr class="${pid === S.me.id ? 'sel' : ''}"><td class="num dim">${i ?? ''}</td><td>${icon}</td><td class="name">${esc(p.name)}</td><td class="hide-sm">${posBadge(p.position)}</td><td class="hide-sm">${stars(p.rating)}</td><td>${paid}</td><td class="num">${ctl}</td></tr>`;
+    return `<tr class="${pid === S.me.id ? 'sel' : ''}"><td class="num dim">${i ?? ''}</td><td>${icon}</td><td class="name"><a class="plink" href="#/player/${pid}">${esc(p.name)}</a>${p.is_guest ? ` <span class="tag guest">GUEST</span>${a?.invited_by ? ` <span class="dim">+${esc(pname(a.invited_by))}</span>` : ''}${admin || a?.invited_by === S.me.id ? ` <button class="x" data-rmguest="${pid}" title="Remove guest">✕</button>` : ''}` : ''}</td><td class="hide-sm">${posBadge(p.position)}</td><td class="hide-sm">${stars(p.rating)}</td><td>${paid}</td><td class="num">${ctl}</td></tr>`;
   };
   const div = (t, n) => `<tr class="divider"><td colspan="7">${t} (${n})</td></tr>`;
   return `
@@ -213,7 +220,7 @@ async function viewMatch(id) {
                 mine.status === 'in' ? '<span class="g flash">YOU\'RE IN.</span> See you on the pitch!' : 'You\'re marked as not coming.'}</div>` : ''}
           </div>
         </div>
-        ${m.goals.length ? `<div class="panel"><div class="panel-h">Goals</div><div class="panel-b">${scorersHtml(m)}</div></div>` : ''}
+        ${m.goals.length || played ? `<div class="panel"><div class="panel-h">${played ? 'Result' : 'Goals'}<span class="spacer"></span>${played ? '<button class="btn sm" id="report">Share report</button>' : ''}</div><div class="panel-b">${m.goals.length ? scorersHtml(m) : '<span class="dim">No goals were recorded live.</span>'}</div></div>` : ''}
         ${m.motm ? motmHtml(m) : ''}
         <div class="panel"><div class="panel-h">Teams</div><div class="panel-b">
           ${m.lineup_published ? `<div class="btn-row"><a class="btn" href="#/tactics/${m.id}">View line-up ›</a>
@@ -222,7 +229,7 @@ async function viewMatch(id) {
             : '<p class="muted">The manager hasn\'t announced the teams yet.</p>'}
         </div></div>
       </div>
-      <div class="panel"><div class="panel-h">Squad<span class="spacer"></span><span class="sub">${S.me.is_admin && m.attendance.some((a) => a.status === 'in')
+      <div class="panel"><div class="panel-h">Squad<span class="spacer"></span>${open || S.me.is_admin ? '<button class="btn sm" id="addguest">+ Guest</button>' : ''}<span class="sub">${S.me.is_admin && m.attendance.some((a) => a.status === 'in')
           ? `${m.attendance.filter((a) => a.status === 'in' && a.paid).length}/${m.attendance.filter((a) => a.status === 'in').length} paid` : 'first come, first served'}</span></div>
         <div class="table-wrap"><table class="fm"><thead><tr><th class="num">#</th><th></th><th>Name</th><th class="hide-sm">Pos</th><th class="hide-sm">Ability</th><th>Paid</th><th></th></tr></thead>
         <tbody>${squadRows(m)}</tbody></table></div>
@@ -241,6 +248,15 @@ async function viewMatch(id) {
     $$('[data-vote]', v).forEach((b) => (b.onclick = async () => {
       try { const r = await api('POST', `/api/matches/${m.id}/motm`, { player_id: Number(b.dataset.vote) }); render(r.match); toast('Vote saved'); } catch (e) { fail(e); }
     }));
+    $$('[data-rmguest]', v).forEach((b) => (b.onclick = async () => {
+      const g = S.pmap[b.dataset.rmguest];
+      if (!confirm(`Remove guest ${g?.name} from this match?`)) return;
+      try { const r = await api('DELETE', `/api/matches/${m.id}/guests/${b.dataset.rmguest}`); render(r.match); toast('Guest removed'); } catch (e) { fail(e); }
+    }));
+    const ag = $('#addguest', v);
+    if (ag) ag.onclick = () => guestForm(m, async (fresh) => { await loadPlayers(); render(fresh); });
+    const rp = $('#report', v);
+    if (rp) rp.onclick = () => shareReport(m);
     const sh = $('#share', v);
     if (sh) sh.onclick = () => shareMatch(m);
   };
@@ -399,6 +415,101 @@ async function viewLive(id) {
       else { const c = $('.clk', v); if (c && m.kicked_off_at && m.status !== 'played') c.textContent = `${Math.floor((Date.now() - new Date(m.kicked_off_at)) / 60000)}' · tap the scorer`; }
     } catch {}
   }, 4000);
+}
+
+// ---------- guests ----------
+async function guestForm(m, done) {
+  let guests = [];
+  try { guests = (await api('GET', '/api/guests')).guests; } catch {}
+  const onList = new Set(m.attendance.map((a) => a.player_id));
+  const prev = guests.filter((g) => !onList.has(g.id));
+  modal('Add a guest', `
+    <p class="muted" style="margin-top:0">A one-off player without a login. They take a spot like anyone else and show as <span class="tag guest">GUEST</span> invited by you.</p>
+    ${prev.length ? `<div class="c" style="margin-bottom:4px">PLAYED WITH US BEFORE</div>
+      <div class="guest-prev">${prev.map((g) => `<button class="pbtn" data-g="${g.id}"><span class="pn">${esc(g.name)}</span><span class="g">${g.games}× ${esc(g.position)}</span></button>`).join('')}</div>
+      <div class="c" style="margin:12px 0 4px">OR SOMEONE NEW</div>` : ''}
+    <form id="gf">
+      <div class="form-grid">
+        <label class="f"><span>Name</span><input type="text" name="name" placeholder="e.g. Marko's colleague Ivan" maxlength="40"></label>
+        <label class="f"><span>Position</span><select name="position">${['GK', 'DEF', 'MID', 'FWD'].map((x) => `<option ${x === 'MID' ? 'selected' : ''}>${x}</option>`).join('')}</select></label>
+        <label class="f"><span>How good? (for team balance)</span><select name="rating">${[1, 2, 3, 4, 5].map((x) => `<option value="${x}" ${x === 3 ? 'selected' : ''}>${'■'.repeat(x)}${'□'.repeat(5 - x)}</option>`).join('')}</select></label>
+      </div>
+      <div class="err" id="gerr"></div>
+      <div class="btn-row" style="justify-content:flex-end"><button type="button" class="btn ghost" data-close>Cancel</button><button class="btn primary">Add guest</button></div>
+    </form>`, (root, close) => {
+    const add = async (body) => {
+      try { const r = await api('POST', `/api/matches/${m.id}/guests`, body); close(); toast('Guest added'); done(r.match); }
+      catch (err) { $('#gerr', root).textContent = err.message; }
+    };
+    $$('[data-g]', root).forEach((b) => (b.onclick = () => add({ guest_id: Number(b.dataset.g) })));
+    $('#gf', root).onsubmit = (e) => { e.preventDefault(); const f = e.target; add({ name: f.name.value, position: f.position.value, rating: Number(f.rating.value) }); };
+  });
+}
+
+// ---------- WhatsApp match report ----------
+function shareReport(m) {
+  const d = dt(m.starts_at);
+  const scorers = (team) => {
+    const c = {}; const order = [];
+    for (const x of m.goals.filter((x) => x.team === team)) {
+      const k = (x.own_goal ? 'og' : '') + x.scorer_id;
+      if (!c[k]) { c[k] = { n: 0, name: pname(x.scorer_id) + (x.own_goal ? ' (OG)' : '') }; order.push(c[k]); }
+      c[k].n++;
+    }
+    return order.map((s) => s.name + (s.n > 1 ? ' ' + s.n : '')).join(', ');
+  };
+  const pad = (t, n) => (t + ' '.repeat(n)).slice(0, n);
+  const A = m.team_a_name.toUpperCase(), B = m.team_b_name.toUpperCase();
+  const lines = [
+    '```',
+    `P304 FUDBAL TEXT  ${DAYS[d.getDay()].toUpperCase()} ${String(d.getDate()).padStart(2, '0')} ${MONTHS[d.getMonth()].toUpperCase()}`,
+    '================================',
+    `${pad(A, 12)} ${String(m.score_a ?? 0).padStart(2)} - ${String(m.score_b ?? 0).padEnd(2)} ${B.slice(0, 12)}`,
+    '                  FULL TIME',
+    '```',
+  ];
+  const sa = scorers('A'), sb = scorers('B');
+  if (sa) lines.push(`⚪ ${sa}`);
+  if (sb) lines.push(`🔴 ${sb}`);
+  const mo = m.motm;
+  if (mo && !mo.open && mo.winners.length) lines.push(`⭐ MOTM: ${mo.winners.map((w) => S.pmap[w]?.name || '?').join(' & ')}`);
+  else if (mo && mo.open) lines.push(`⭐ Man of the match voting is open → ${location.origin}/#/match/${m.id}`);
+  lines.push('', `${location.origin}/#/match/${m.id}`);
+  window.open(`https://wa.me/?text=${encodeURIComponent(lines.join('\n'))}`, '_blank');
+}
+
+// ---------- player profile ----------
+async function viewProfile(id) {
+  const v = mount('stats');
+  await loadPlayers();
+  const { player: p, totals: t, games, best_mate } = await api('GET', `/api/players/${id}/profile`);
+  const form = games.slice(0, 5);
+  const chip = (r) => `<span class="res res-${r}">${r}</span>`;
+  const tile = (n, l, cls = '') => `<div class="tile"><div class="n ${cls}">${n}</div><div class="l">${l}</div></div>`;
+  v.innerHTML = `
+  <div class="panel"><div class="panel-h">${esc(p.name)}${p.is_guest ? ' <span class="tag guest" style="color:#000">GUEST</span>' : ''}<span class="spacer"></span><span class="sub">${esc(p.position)}</span></div>
+    <div class="panel-b">
+      <div class="form-line"><span class="c">FORM</span> ${form.length ? form.map((g) => chip(g.result)).join('') : '<span class="dim">no games yet</span>'}</div>
+      <div class="tiles">
+        ${tile(t.played, 'Apps')}${tile(t.goals, 'Goals', 'y')}${tile(t.assists, 'Assists', 'c')}${tile(t.motm, 'MOTM ★', 'm')}
+        ${tile(t.win_pct + '%', 'Win rate', 'g')}${tile(`${t.won}-${t.drawn}-${t.lost}`, 'W-D-L', 'wdl')}
+        ${t.played ? tile(((t.goals) / t.played).toFixed(1), 'Goals/game', 'y') : ''}${p.is_guest ? '' : tile(t.signed_in, 'Sign-ups')}
+      </div>
+      ${best_mate && S.pmap[best_mate.id] ? `<p class="muted">Best partner: <a class="plink" href="#/player/${best_mate.id}">${esc(S.pmap[best_mate.id].name.toUpperCase())}</a>
+        — <span class="g">${best_mate.pct}% wins</span> in ${best_mate.games} games together</p>` : ''}
+      ${t.own_goals ? `<p class="r" style="margin:0">Own goals: ${t.own_goals} 🙈</p>` : ''}
+    </div>
+  </div>
+  <div class="panel"><div class="panel-h" style="background:var(--re);color:#fff">Recent matches</div>
+    <div class="table-wrap"><table class="fm"><tbody>
+    ${games.map((g) => `<tr class="click" data-m="${g.match_id}"><td>${chip(g.result)}</td><td>${fmtShort(g.starts_at)}</td>
+      <td class="num y">${g.for}-${g.against}</td><td class="hide-sm dim">${esc(g.team_name)}${g.sub ? ' (sub)' : ''}</td>
+      <td>${'⚽'.repeat(g.goals)}${g.assists ? ` <span class="c">${'A'.repeat(g.assists)}</span>` : ''}${g.motm ? ' <span class="m">★</span>' : ''}</td></tr>`).join('')
+      || '<tr><td class="muted">No played matches yet.</td></tr>'}
+    </tbody></table></div>
+  </div>
+  <a class="btn ghost" href="#/stats">‹ Table</a>`;
+  $$('tr[data-m]', v).forEach((tr) => (tr.onclick = () => (location.hash = `#/match/${tr.dataset.m}`)));
 }
 
 function shareMatch(m) {
@@ -657,7 +768,7 @@ async function viewStats() {
   const rows = players.map((p) => ({ ...p, pct: p.played ? Math.round((p.won / p.played) * 100) : 0, pts: p.won * 3 + p.drawn, gd: p.gf - p.ga }));
   // [key, label, numeric, hideOnPhone, cell]
   const cols = [
-    ['name', 'Player', 0, 0, (r) => `<td class="name">${esc(r.name)}</td>`],
+    ['name', 'Player', 0, 0, (r) => `<td class="name"><a class="plink" href="#/player/${r.id}">${esc(r.name)}</a></td>`],
     ['position', 'Pos', 0, 1, (r) => `<td class="hide-sm">${posBadge(r.position)}</td>`],
     ['played', 'Apps', 1, 0, (r) => `<td class="num">${r.played}</td>`],
     ['won', 'W', 1, 0, (r) => `<td class="num">${r.won}</td>`],
@@ -700,15 +811,18 @@ async function viewAdmin(sub, arg) {
 
 async function adminSquad(el) {
   await loadPlayers();
-  const list = [...S.players].sort((a, b) => b.active - a.active || a.name.localeCompare(b.name));
+  const all = [...S.players].sort((a, b) => b.active - a.active || a.name.localeCompare(b.name));
+  const list = all.filter((p) => !p.is_guest), guests = all.filter((p) => p.is_guest);
   el.innerHTML = `
   <div class="panel"><div class="panel-h">Squad<span class="spacer"></span><span class="sub">${list.filter((p) => p.active).length} active</span>
     <button class="btn sm primary" id="add">+ Add player</button><button class="btn sm" id="bulk">Bulk add</button></div>
-    <div class="table-wrap"><table class="fm"><thead><tr><th>Name</th><th>Phone</th><th>Pos</th><th>Ability</th><th></th></tr></thead><tbody>
-    ${list.map((p) => `<tr class="click" data-id="${p.id}" style="${p.active ? '' : 'opacity:.5'}"><td class="name">${esc(p.name)}</td><td class="dim">${esc(p.phone)}</td>
-      <td>${posBadge(p.position)}</td><td>${stars(p.rating)}</td><td>${p.is_admin ? '<span class="tag admin">Admin</span>' : ''} ${p.active ? '' : '<span class="tag">Inactive</span>'}</td></tr>`).join('')}
+    <div class="table-wrap"><table class="fm"><thead><tr><th>Name</th><th class="hide-sm">Phone</th><th>Pos</th><th class="hide-sm">Ability</th><th class="hide-sm"></th></tr></thead><tbody>
+    ${list.map((p) => `<tr class="click" data-id="${p.id}" style="${p.active ? '' : 'opacity:.5'}"><td class="name">${esc(p.name)}<div class="show-sm dim sub2">${esc(p.phone)} ${stars(p.rating)} ${p.is_admin ? '<span class="tag admin">ADMIN</span>' + (p.has_pin ? '' : ' <span class="r">NO PIN</span>') : ''}${p.active ? '' : ' <span class="tag">INACTIVE</span>'}</div></td><td class="dim hide-sm">${esc(p.phone)}</td>
+      <td>${posBadge(p.position)}</td><td class="hide-sm">${stars(p.rating)}</td><td class="hide-sm">${p.is_admin ? '<span class="tag admin">Admin</span>' + (p.has_pin ? '' : ' <span class="r flash">NO PIN</span>') : ''} ${p.active ? '' : '<span class="tag">Inactive</span>'}</td></tr>`).join('')}
+    ${guests.length ? `<tr class="divider"><td colspan="5">Guests (${guests.length})</td></tr>
+      ${guests.map((p) => `<tr class="click" data-id="${p.id}"><td class="name">${esc(p.name)} <span class="tag guest">GUEST</span></td><td class="dim hide-sm">—</td><td>${posBadge(p.position)}</td><td class="hide-sm">${stars(p.rating)}</td><td class="hide-sm"></td></tr>`).join('')}` : ''}
     </tbody></table></div>
-    <div class="panel-b muted" style="font-size:18px">Only phone numbers on this list can log in. "Ability" is only visible to players as stars and drives Auto-balance.</div>
+    <div class="panel-b muted" style="font-size:18px">Only phone numbers on this list can log in. Ability drives Auto-balance. Tap a guest to rename them, or add their number to make them a member.</div>
   </div>`;
   $('#add').onclick = () => playerForm(null, () => adminSquad(el));
   $('#bulk').onclick = () => bulkForm(() => adminSquad(el));
@@ -726,16 +840,21 @@ function modal(title, bodyHtml, onMount) {
 
 function playerForm(p, done) {
   const isNew = !p; p = p || { name: '', phone: '', position: 'MID', rating: 3, is_admin: false, active: true };
+  const guest = !!p.is_guest;
   modal(isNew ? 'New player' : `Edit ${p.name}`, `
     <form id="pf">
       <div class="form-grid">
         <label class="f"><span>Name</span><input type="text" name="name" value="${esc(p.name)}" required></label>
-        <label class="f"><span>Phone (WhatsApp)</span><input type="tel" name="phone" value="${esc(p.phone)}" required placeholder="+381641234567"></label>
+        <label class="f"><span>Phone (WhatsApp)</span><input type="tel" name="phone" value="${esc(guest ? '' : p.phone)}" ${guest ? '' : 'required'} placeholder="${guest ? 'add to make them a member' : '+381641234567'}"></label>
         <label class="f"><span>Position</span><select name="position">${['GK', 'DEF', 'MID', 'FWD'].map((x) => `<option ${x === p.position ? 'selected' : ''}>${x}</option>`).join('')}</select></label>
         <label class="f"><span>Ability (1–5)</span><select name="rating">${[1, 2, 3, 4, 5].map((x) => `<option value="${x}" ${x === p.rating ? 'selected' : ''}>${'■'.repeat(x)}${'□'.repeat(5 - x)}</option>`).join('')}</select></label>
       </div>
+      <div ${guest ? 'hidden' : ''}>
       <label class="check"><input type="checkbox" name="is_admin" ${p.is_admin ? 'checked' : ''}> Admin (can create matches &amp; pick teams)</label>
+      <label class="f" id="pinf" ${p.is_admin ? '' : 'hidden'}><span class="m">Admin PIN ${p.has_pin ? '(set — type to change)' : '(required for admin rights)'}</span>
+        <input type="password" name="pin" inputmode="numeric" autocomplete="new-password" placeholder="4–8 digits"></label>
       <label class="check"><input type="checkbox" name="active" ${p.active ? 'checked' : ''}> Active (can log in, shows in squad)</label>
+      </div>
       <div class="err" id="perr"></div>
       <div class="btn-row" style="justify-content:space-between">
         ${isNew ? '<span></span>' : '<button type="button" class="btn danger" id="pdel">Delete</button>'}
@@ -743,9 +862,11 @@ function playerForm(p, done) {
       </div>
     </form>`, (root, close) => {
     const f = $('#pf', root);
+    f.is_admin.onchange = () => { $('#pinf', root).hidden = !f.is_admin.checked; };
     f.onsubmit = async (e) => {
       e.preventDefault();
-      const body = { name: f.name.value, phone: f.phone.value, position: f.position.value, rating: Number(f.rating.value), is_admin: f.is_admin.checked, active: f.active.checked };
+      const body = { name: f.name.value, phone: f.phone.value, position: f.position.value, rating: Number(f.rating.value), is_admin: f.is_admin.checked, active: f.active.checked, pin: f.pin.value };
+      if (guest && !f.phone.value.trim()) { delete body.phone; delete body.is_admin; delete body.active; delete body.pin; }
       try { isNew ? await api('POST', '/api/players', body) : await api('PUT', `/api/players/${p.id}`, body); close(); toast('Saved'); done(); }
       catch (err) { $('#perr', root).textContent = err.message; }
     };
@@ -857,6 +978,14 @@ function adminSettings(el) {
   <div class="panel"><div class="panel-h">Group password</div><div class="panel-b">
     <p class="muted" style="margin-top:0">Everyone uses this password together with their own phone number. Changing it doesn't log out people who are already signed in.</p>
     <form id="sf" class="btn-row"><input type="text" name="password" placeholder="New group password" style="max-width:260px" required minlength="4"><button class="btn primary">Change</button></form>
+  </div></div>
+  <div class="panel"><div class="panel-h">Backup</div><div class="panel-b">
+    <p class="muted" style="margin-top:0">Download a copy of everything (players, matches, goals, votes). Keep it somewhere safe — once a month is plenty.</p>
+    <a class="btn primary" href="/api/backup" download>Download backup</a>
+  </div></div>
+  <div class="panel"><div class="panel-h">Admin PIN</div><div class="panel-b">
+    <p class="muted" style="margin-top:0">Admins log in with number + group password + their personal PIN. Without the PIN they're a normal player — so a friend who knows your number can't get admin rights.
+    Set yours with the <b class="y">ADMIN_PIN</b> variable on Railway, or give other admins a PIN in Squad.</p>
   </div></div>
   <div class="panel"><div class="panel-h">Invite link</div><div class="panel-b">
     <p class="muted" style="margin-top:0">Post this in the WhatsApp group description:</p>

@@ -85,6 +85,10 @@ const addCol = (table, col, def) => {
 addCol('attendance', 'paid', 'INTEGER NOT NULL DEFAULT 0');
 addCol('matches', 'kicked_off_at', 'TEXT');
 addCol('matches', 'ended_at', 'TEXT');
+addCol('players', 'pin_hash', 'TEXT');
+addCol('players', 'is_guest', 'INTEGER NOT NULL DEFAULT 0');
+addCol('sessions', 'elevated', 'INTEGER NOT NULL DEFAULT 0');
+addCol('attendance', 'invited_by', 'INTEGER');
 
 // ---------- helpers ----------
 const normPhone = (p) => {
@@ -150,6 +154,20 @@ const sha = (s) => crypto.createHash('sha256').update(s).digest('hex');
     } else {
       console.log(`[setup] Admin ${ex.name} OK`);
     }
+    // ADMIN_PIN: personal PIN for this admin, applied whenever the env value changes.
+    const pin = envVal('ADMIN_PIN');
+    const me = db.prepare('SELECT * FROM players').all().find((p) => phoneKey(p.phone) === phoneKey(phone));
+    if (pin && me && getSetting('admin_pin_env') !== sha(me.id + ':' + pin)) {
+      if (!/^\d{4,8}$/.test(pin)) console.log('[setup] ADMIN_PIN must be 4-8 digits - ignored');
+      else {
+        db.prepare('UPDATE players SET pin_hash=? WHERE id=?').run(hashPw(pin), me.id);
+        db.prepare('DELETE FROM sessions WHERE player_id=?').run(me.id); // log out old sessions
+        setSetting('admin_pin_env', sha(me.id + ':' + pin));
+        console.log(`[setup] Admin PIN set for ${me.name} (${pin.length} digits)`);
+      }
+    } else if (!pin && me && !me.pin_hash) {
+      console.log('[setup] WARNING: no ADMIN_PIN set - anyone with your number and the group password gets admin rights');
+    }
   } else if (!db.prepare('SELECT 1 FROM players LIMIT 1').get()) {
     console.log('[setup] No players yet. Set ADMIN_PHONE (and ADMIN_NAME) and restart to create the first admin.');
   }
@@ -181,10 +199,15 @@ const readBody = (req) => new Promise((resolve, reject) => {
 });
 const parseCookies = (h = '') => Object.fromEntries(h.split(';').map((c) => c.trim().split('=')).filter((p) => p[0]).map(([k, ...v]) => [k, decodeURIComponent(v.join('='))]));
 
-const currentUser = (req) => {
-  const token = parseCookies(req.headers.cookie).fm_session;
+const currentUser = (req) => currentUserByToken(parseCookies(req.headers.cookie).fm_session);
+const currentUserByToken = (token) => {
   if (!token) return null;
-  return db.prepare(`SELECT p.* FROM sessions s JOIN players p ON p.id=s.player_id WHERE s.token=? AND p.active=1`).get(token) || null;
+  const u = db.prepare(`SELECT p.*, s.elevated FROM sessions s JOIN players p ON p.id=s.player_id WHERE s.token=? AND p.active=1 AND p.is_guest=0`).get(token);
+  if (!u) return null;
+  // An admin with a PIN only gets admin rights in a session that was opened with that PIN.
+  u.admin_account = !!u.is_admin;
+  u.is_admin = u.is_admin && (!u.pin_hash || u.elevated) ? 1 : 0;
+  return u;
 };
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.webmanifest': 'application/manifest+json' };
@@ -211,9 +234,11 @@ const limited = (ip) => {
 
 // ---------- domain ----------
 const pubPlayer = (p, admin) => ({
-  id: p.id, name: p.name, position: p.position, rating: p.rating, is_admin: !!p.is_admin, active: !!p.active,
-  ...(admin ? { phone: p.phone } : {}),
+  id: p.id, name: p.name, position: p.position, rating: p.rating, is_admin: !!p.is_admin, active: !!p.active, is_guest: !!p.is_guest,
+  ...(admin && !p.is_guest ? { phone: p.phone } : {}),
+  ...(admin ? { has_pin: !!p.pin_hash } : {}),
 });
+const meJson = (u) => ({ ...pubPlayer(u, true), admin_account: !!u.admin_account });
 
 // ---- man of the match ----
 const VOTE_HOURS = 24;
@@ -233,21 +258,22 @@ const motmInfo = (m, user) => {
   if (!closes) return null;
   const open = new Date() < new Date(closes);
   const played = playedIds(m.id);
+  const voters = db.prepare('SELECT COUNT(*) AS n FROM lineups l JOIN players p ON p.id=l.player_id WHERE l.match_id=? AND p.is_guest=0').get(m.id).n;
   const mine = db.prepare('SELECT player_id FROM motm_votes WHERE match_id=? AND voter_id=?').get(m.id, user.id);
   const total = db.prepare('SELECT COUNT(*) AS n FROM motm_votes WHERE match_id=?').get(m.id).n;
   const counts = open ? null : Object.fromEntries(db.prepare('SELECT player_id, COUNT(*) AS n FROM motm_votes WHERE match_id=? GROUP BY player_id').all(m.id).map((r) => [r.player_id, r.n]));
   return { open, closes_at: closes, can_vote: open && played.has(user.id), my_vote: mine ? mine.player_id : null,
-    votes: total, voters: played.size, counts, winners: open ? [] : motmWinners(m.id) };
+    votes: total, voters, counts, winners: open ? [] : motmWinners(m.id) };
 };
 
 const matchDetail = (id, user) => {
   const m = db.prepare('SELECT * FROM matches WHERE id=?').get(id);
   if (!m) throw new HttpError(404, 'Match not found');
-  const att = db.prepare(`SELECT a.player_id, a.status, a.updated_at, a.paid FROM attendance a JOIN players p ON p.id=a.player_id
+  const att = db.prepare(`SELECT a.player_id, a.status, a.updated_at, a.paid, a.invited_by FROM attendance a JOIN players p ON p.id=a.player_id
     WHERE a.match_id=? AND p.active=1 ORDER BY a.updated_at ASC`).all(id);
   const cap = m.team_size * 2;
   let n = 0;
-  const attendance = att.map((a) => ({ player_id: a.player_id, status: a.status, at: a.updated_at, paid: !!a.paid, reserve: a.status === 'in' ? ++n > cap : false }));
+  const attendance = att.map((a) => ({ player_id: a.player_id, status: a.status, at: a.updated_at, paid: !!a.paid, invited_by: a.invited_by, reserve: a.status === 'in' ? ++n > cap : false }));
   const showLineup = m.lineup_published || user.is_admin;
   const lineup = showLineup ? db.prepare('SELECT player_id, team, slot FROM lineups WHERE match_id=?').all(id) : [];
   const mine = att.find((a) => a.player_id === user.id);
@@ -269,15 +295,25 @@ route('POST', '/api/login', async (req, res, { body }) => {
   if (limited(ip)) throw new HttpError(429, 'Too many attempts. Try again in 10 minutes.');
   const key = phoneKey(body.phone);
   const pwOk = checkPw(String(body.password || '').trim(), getSetting('group_password'));
-  const player = key.length >= 8 ? db.prepare('SELECT * FROM players WHERE active=1').all().find((p) => phoneKey(p.phone) === key) : null;
+  const player = key.length >= 8 ? db.prepare('SELECT * FROM players WHERE active=1 AND is_guest=0').all().find((p) => phoneKey(p.phone) === key) : null;
   if (!pwOk || !player) {
     attempts.get(ip).push(Date.now());
     throw new HttpError(401, !pwOk ? 'Wrong group password.' : 'This number is not on the squad list. Ask an admin to add you.');
   }
+  const pin = String(body.pin || '').trim();
+  let elevated = 0;
+  if (pin) {
+    if (!player.is_admin || !player.pin_hash || !checkPw(pin, player.pin_hash)) {
+      attempts.get(ip).push(Date.now());
+      throw new HttpError(401, 'Wrong admin PIN.');
+    }
+    elevated = 1;
+  }
   const token = crypto.randomBytes(32).toString('hex');
-  db.prepare('INSERT INTO sessions(token, player_id) VALUES(?,?)').run(token, player.id);
+  db.prepare('INSERT INTO sessions(token, player_id, elevated) VALUES(?,?,?)').run(token, player.id, elevated);
+  const u = currentUserByToken(token);
   const secure = req.headers['x-forwarded-proto'] === 'https' ? '; Secure' : '';
-  send(res, 200, { user: pubPlayer(player, true) }, {
+  send(res, 200, { user: meJson(u) }, {
     'Set-Cookie': `fm_session=${token}; HttpOnly; Path=/; Max-Age=${60 * 60 * 24 * 365}; SameSite=Lax${secure}`,
   });
 }, { public: true });
@@ -288,11 +324,11 @@ route('POST', '/api/logout', (req, res) => {
   send(res, 200, { ok: true }, { 'Set-Cookie': 'fm_session=; HttpOnly; Path=/; Max-Age=0; SameSite=Lax' });
 });
 
-route('GET', '/api/me', (req, res, { user }) => send(res, 200, { user: pubPlayer(user, true) }));
+route('GET', '/api/me', (req, res, { user }) => send(res, 200, { user: meJson(user) }));
 
 // ---------- routes: players ----------
 route('GET', '/api/players', (req, res, { user }) => {
-  const rows = db.prepare(`SELECT * FROM players ${user.is_admin ? '' : 'WHERE active=1'} ORDER BY name COLLATE NOCASE`).all();
+  const rows = db.prepare(`SELECT * FROM players ${user.is_admin ? '' : 'WHERE active=1'} ORDER BY is_guest, name COLLATE NOCASE`).all();
   send(res, 200, { players: rows.map((p) => pubPlayer(p, user.is_admin)) });
 });
 
@@ -306,7 +342,9 @@ const playerFields = (b, existing = {}) => {
   const rating = int(b.rating ?? existing.rating ?? 3, 'Rating', 1, 5);
   const is_admin = (b.is_admin ?? !!existing.is_admin) ? 1 : 0;
   const active = (b.active ?? (existing.active ?? 1)) ? 1 : 0;
-  return { name, phone, position, rating, is_admin, active };
+  const pin = b.pin == null ? '' : String(b.pin).trim();
+  if (pin && !/^\d{4,8}$/.test(pin)) bad('Admin PIN must be 4–8 digits');
+  return { name, phone, position, rating, is_admin, active, pin };
 };
 const phoneTaken = (phone, exceptId = 0) =>
   db.prepare('SELECT id, phone FROM players WHERE id<>?').all(exceptId).some((p) => phoneKey(p.phone) === phoneKey(phone));
@@ -315,8 +353,8 @@ route('POST', '/api/players', (req, res, { user, body }) => {
   requireAdmin(user);
   const f = playerFields(body);
   if (phoneTaken(f.phone)) bad('A player with this phone number already exists');
-  const r = db.prepare('INSERT INTO players(name,phone,position,rating,is_admin,active) VALUES(?,?,?,?,?,?)')
-    .run(f.name, f.phone, f.position, f.rating, f.is_admin, f.active);
+  const r = db.prepare('INSERT INTO players(name,phone,position,rating,is_admin,active,pin_hash) VALUES(?,?,?,?,?,?,?)')
+    .run(f.name, f.phone, f.position, f.rating, f.is_admin, f.active, f.pin ? hashPw(f.pin) : null);
   send(res, 201, { id: Number(r.lastInsertRowid) });
 });
 
@@ -324,11 +362,24 @@ route('PUT', '/api/players/:id', (req, res, { user, body, params }) => {
   requireAdmin(user);
   const ex = db.prepare('SELECT * FROM players WHERE id=?').get(params.id);
   if (!ex) throw new HttpError(404, 'Player not found');
-  const f = playerFields(body, ex);
+  const wasGuest = !!ex.is_guest;
+  if (wasGuest && !body.phone) {
+    // editing a guest without giving a number: keep them a guest
+    const name = String(body.name ?? ex.name).trim() || ex.name;
+    const position = POSITIONS.includes(String(body.position || '').toUpperCase()) ? String(body.position).toUpperCase() : ex.position;
+    const rating = body.rating != null ? int(body.rating, 'Rating', 1, 5) : ex.rating;
+    db.prepare('UPDATE players SET name=?, position=?, rating=? WHERE id=?').run(name, position, rating, ex.id);
+    return send(res, 200, { ok: true });
+  }
+  const f = playerFields(body, wasGuest ? { ...ex, phone: '' } : ex);
   if (phoneTaken(f.phone, ex.id)) bad('A player with this phone number already exists');
   if (ex.id === user.id && (!f.is_admin || !f.active)) bad("You can't remove your own admin rights or deactivate yourself");
-  db.prepare('UPDATE players SET name=?, phone=?, position=?, rating=?, is_admin=?, active=? WHERE id=?')
+  db.prepare('UPDATE players SET name=?, phone=?, position=?, rating=?, is_admin=?, active=?, is_guest=0 WHERE id=?')
     .run(f.name, f.phone, f.position, f.rating, f.is_admin, f.active, ex.id);
+  if (f.pin) {
+    db.prepare('UPDATE players SET pin_hash=? WHERE id=?').run(hashPw(f.pin), ex.id);
+    if (ex.id !== user.id) db.prepare('DELETE FROM sessions WHERE player_id=?').run(ex.id);
+  }
   if (!f.active) db.prepare('DELETE FROM sessions WHERE player_id=?').run(ex.id);
   send(res, 200, { ok: true });
 });
@@ -536,6 +587,102 @@ route('POST', '/api/matches/:id/motm', (req, res, { user, body, params }) => {
   send(res, 200, { match: matchDetail(m.id, user) });
 });
 
+// ---------- routes: guests (one-off players, no login) ----------
+const guestPhone = () => 'guest:' + [...crypto.randomBytes(12)].map((b) => String.fromCharCode(97 + (b % 26))).join('');
+route('GET', '/api/guests', (req, res) => {
+  const rows = db.prepare(`SELECT p.*, (SELECT COUNT(*) FROM attendance a WHERE a.player_id=p.id) AS games FROM players p
+    WHERE p.is_guest=1 AND p.active=1 ORDER BY p.name COLLATE NOCASE`).all();
+  send(res, 200, { guests: rows.map((g) => ({ ...pubPlayer(g, false), games: g.games })) });
+});
+route('POST', '/api/matches/:id/guests', (req, res, { user, body, params }) => {
+  const m = db.prepare('SELECT * FROM matches WHERE id=?').get(Number(params.id));
+  if (!m) throw new HttpError(404, 'Match not found');
+  if (m.status !== 'upcoming' && !user.is_admin) bad('This match is closed');
+  let gid = body.guest_id != null ? Number(body.guest_id) : null;
+  if (gid) {
+    const g = db.prepare('SELECT * FROM players WHERE id=? AND is_guest=1').get(gid);
+    if (!g) bad('Guest not found');
+  } else {
+    const name = String(body.name || '').trim().slice(0, 40);
+    if (!name) bad('Give the guest a name');
+    const position = POSITIONS.includes(String(body.position || '').toUpperCase()) ? String(body.position).toUpperCase() : 'MID';
+    const rating = body.rating != null && body.rating !== '' ? int(body.rating, 'Rating', 1, 5) : 3;
+    const existing = db.prepare('SELECT id FROM players WHERE is_guest=1 AND name=? COLLATE NOCASE').get(name);
+    gid = existing ? existing.id : Number(db.prepare('INSERT INTO players(name, phone, position, rating, is_guest) VALUES(?,?,?,?,1)')
+      .run(name, guestPhone(), position, rating).lastInsertRowid);
+    if (existing) db.prepare('UPDATE players SET active=1 WHERE id=?').run(gid);
+  }
+  if (db.prepare('SELECT 1 FROM attendance WHERE match_id=? AND player_id=?').get(m.id, gid)) bad('That guest is already on the list');
+  db.prepare(`INSERT INTO attendance(match_id, player_id, status, invited_by, updated_at) VALUES(?,?,'in',?,strftime('%Y-%m-%d %H:%M:%f','now'))`)
+    .run(m.id, gid, user.id);
+  send(res, 201, { match: matchDetail(m.id, user) });
+});
+route('DELETE', '/api/matches/:id/guests/:pid', (req, res, { user, params }) => {
+  const a = db.prepare(`SELECT a.* FROM attendance a JOIN players p ON p.id=a.player_id WHERE a.match_id=? AND a.player_id=? AND p.is_guest=1`)
+    .get(Number(params.id), Number(params.pid));
+  if (!a) throw new HttpError(404, 'Guest not on this match');
+  if (!user.is_admin && a.invited_by !== user.id) throw new HttpError(403, 'Only the player who invited them or an admin can remove a guest');
+  db.prepare('DELETE FROM attendance WHERE match_id=? AND player_id=?').run(a.match_id, a.player_id);
+  db.prepare('DELETE FROM lineups WHERE match_id=? AND player_id=?').run(a.match_id, a.player_id);
+  send(res, 200, { match: matchDetail(a.match_id, user) });
+});
+
+// ---------- routes: player profile ----------
+route('GET', '/api/players/:id/profile', (req, res, { user, params }) => {
+  const p = db.prepare('SELECT * FROM players WHERE id=?').get(Number(params.id));
+  if (!p) throw new HttpError(404, 'Player not found');
+  const games = db.prepare(`SELECT m.id, m.starts_at, m.team_a_name, m.team_b_name, m.score_a, m.score_b, m.status, m.ended_at, l.team, l.slot
+    FROM lineups l JOIN matches m ON m.id=l.match_id
+    WHERE l.player_id=? AND m.status='played' AND m.score_a IS NOT NULL AND m.score_b IS NOT NULL
+    ORDER BY m.starts_at DESC`).all(p.id);
+  const goalsBy = Object.fromEntries(db.prepare(`SELECT match_id, COUNT(*) AS n FROM goals WHERE scorer_id=? AND own_goal=0 GROUP BY match_id`).all(p.id).map((r) => [r.match_id, r.n]));
+  const assistsBy = Object.fromEntries(db.prepare(`SELECT match_id, COUNT(*) AS n FROM goals WHERE assist_id=? GROUP BY match_id`).all(p.id).map((r) => [r.match_id, r.n]));
+  const ogBy = Object.fromEntries(db.prepare(`SELECT match_id, COUNT(*) AS n FROM goals WHERE scorer_id=? AND own_goal=1 GROUP BY match_id`).all(p.id).map((r) => [r.match_id, r.n]));
+  const list = games.map((g) => {
+    const mine = g.team === 'A' ? g.score_a : g.score_b, theirs = g.team === 'A' ? g.score_b : g.score_a;
+    const c = voteClosesAt(g);
+    const motm = c && new Date() >= new Date(c) && motmWinners(g.id).includes(p.id);
+    return { match_id: g.id, starts_at: g.starts_at, team: g.team, team_name: g.team === 'A' ? g.team_a_name : g.team_b_name,
+      opp_name: g.team === 'A' ? g.team_b_name : g.team_a_name, for: mine, against: theirs,
+      result: mine > theirs ? 'W' : mine < theirs ? 'L' : 'D', sub: g.slot >= 100,
+      goals: goalsBy[g.id] || 0, assists: assistsBy[g.id] || 0, own_goals: ogBy[g.id] || 0, motm };
+  });
+  const sum = (k) => list.reduce((a, g) => a + (typeof g[k] === 'boolean' ? (g[k] ? 1 : 0) : g[k]), 0);
+  const count = (r) => list.filter((g) => g.result === r).length;
+  // most common team-mate and win rate together
+  const mates = {};
+  for (const g of games) {
+    for (const t of db.prepare('SELECT player_id FROM lineups WHERE match_id=? AND team=? AND player_id<>?').all(g.id, g.team, p.id)) {
+      const x = mates[t.player_id] || (mates[t.player_id] = { games: 0, wins: 0 });
+      x.games++; const mine = g.team === 'A' ? g.score_a : g.score_b, theirs = g.team === 'A' ? g.score_b : g.score_a;
+      if (mine > theirs) x.wins++;
+    }
+  }
+  const best = Object.entries(mates).filter(([, x]) => x.games >= 3).map(([id, x]) => ({ id: Number(id), ...x, pct: Math.round(x.wins / x.games * 100) }))
+    .sort((a, b) => b.pct - a.pct || b.games - a.games)[0] || null;
+  const signups = db.prepare(`SELECT SUM(a.status='in') AS ins, SUM(a.status='out') AS outs FROM attendance a JOIN matches m ON m.id=a.match_id
+    WHERE a.player_id=? AND m.status<>'cancelled'`).get(p.id);
+  send(res, 200, { player: pubPlayer(p, false), totals: {
+    played: list.length, won: count('W'), drawn: count('D'), lost: count('L'), goals: sum('goals'), assists: sum('assists'),
+    motm: sum('motm'), own_goals: sum('own_goals'), win_pct: list.length ? Math.round(count('W') / list.length * 100) : 0,
+    signed_in: signups.ins || 0, signed_out: signups.outs || 0,
+  }, games: list.slice(0, 30), best_mate: best });
+});
+
+// ---------- routes: backup ----------
+route('GET', '/api/backup', (req, res, { user }) => {
+  requireAdmin(user);
+  const tmp = path.join(DATA_DIR, `backup-${process.pid}-${Date.now()}.db`);
+  try {
+    db.exec(`VACUUM INTO '${tmp.replace(/'/g, "''")}'`);
+    const buf = fs.readFileSync(tmp);
+    const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
+    res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': buf.length,
+      'Content-Disposition': `attachment; filename="fudbal-backup-${stamp}.db"`, 'Cache-Control': 'no-store' });
+    res.end(buf);
+  } finally { fs.rmSync(tmp, { force: true }); }
+});
+
 // ---------- routes: stats ----------
 route('GET', '/api/stats', (req, res) => {
   const rows = db.prepare(`
@@ -549,7 +696,7 @@ route('GET', '/api/stats', (req, res) => {
     FROM players p
     LEFT JOIN (SELECT l.player_id, l.team, m.id AS mid, m.score_a AS sa, m.score_b AS sb FROM lineups l JOIN matches m ON m.id=l.match_id
       WHERE m.status='played' AND m.score_a IS NOT NULL AND m.score_b IS NOT NULL) x ON x.player_id=p.id
-    WHERE p.active=1
+    WHERE p.active=1 AND p.is_guest=0
     GROUP BY p.id`).all();
   const signups = db.prepare(`SELECT a.player_id, SUM(a.status='in') AS ins, SUM(a.status='out') AS outs FROM attendance a
     JOIN matches m ON m.id=a.match_id WHERE m.status<>'cancelled' GROUP BY a.player_id`).all();

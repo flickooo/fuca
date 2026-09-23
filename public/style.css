@@ -217,6 +217,8 @@ tr.divider td::before { content: "▀▀ "; color: var(--ma); }
 .subtabs .btn { background: var(--bk); color: var(--ma); box-shadow: inset 0 0 0 2px var(--ma); }
 .subtabs .btn.active { background: var(--ma); color: var(--wh); }
 .admin-status { width: auto !important; min-height: 28px !important; padding: 0 4px !important; font-size: 19px !important; }
+@media (min-width: 521px) { .show-sm { display: none !important; } }
+.sub2 { font-size: 17px; text-transform: none; }
 @media (max-width: 520px) {
   html, body { font-size: 19px; }
   main { padding: 0 8px 8px; }
@@ -278,3 +280,18 @@ tr.divider td::before { content: "▀▀ "; color: var(--ma); }
 .sheet .grid .btn.ghost { box-shadow: inset 0 0 0 2px var(--wh); color: var(--wh); background: transparent; justify-content: center; }
 .sheet-foot { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
 .sheet-foot .spacer { flex: 1; }
+
+/* ---------- guests / profile ---------- */
+.tag.guest { background: var(--ma); color: var(--wh); padding: 0 4px; font-size: 17px; }
+td .x, .guest-x { background: none; border: 0; color: var(--ma); font-size: 22px; cursor: pointer; padding: 0 4px; }
+a.plink { color: inherit; text-decoration: none; }
+a.plink:hover { color: var(--ye); text-decoration: underline; }
+.guest-prev { max-height: 240px; overflow-y: auto; }
+.form-line { font-size: 24px; display: flex; gap: 6px; align-items: center; margin-bottom: 10px; }
+.res { display: inline-block; width: 30px; text-align: center; color: var(--bk); }
+.res-W { background: var(--gr); } .res-D { background: var(--ye); } .res-L { background: var(--re); color: var(--wh); }
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; margin-bottom: 10px; }
+.tile { background: #0a0a2a; box-shadow: inset 0 0 0 2px var(--bl); padding: 6px 4px; text-align: center; }
+.tile .n { font-size: 40px; line-height: 1; }
+.tile .l { color: var(--cy); text-transform: uppercase; font-size: 17px; }
+.tile .n.wdl { font-size: 30px; white-space: nowrap; padding-top: 6px; }
