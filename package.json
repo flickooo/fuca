@@ -1,0 +1,9 @@
+{
+  "name": "fudbal-manager",
+  "version": "1.0.0",
+  "description": "Organise weekly football with friends — sign-ups, FM-style team picker, stats.",
+  "main": "server.js",
+  "private": true,
+  "scripts": { "start": "node --disable-warning=ExperimentalWarning server.js" },
+  "engines": { "node": ">=22.13" }
+}
