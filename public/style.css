@@ -375,3 +375,32 @@ table.fm td.pts b { font-weight: normal; color: var(--ye); }
 .tl .who { flex: 1; min-width: 0; text-transform: uppercase; }
 .tl .who .c { text-transform: none; }
 .tl .sc { flex: none; }
+
+/* ---------- predictions ---------- */
+.pred { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; text-align: center; gap: 6px; }
+.pred .pt { text-transform: uppercase; font-size: 20px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pred .pt.A { color: var(--wh); } .pred .pt.B { color: var(--re); }
+.pstep { display: flex; align-items: center; justify-content: center; gap: 8px; }
+.pstep .btn { min-width: 38px; min-height: 38px; font-size: 26px; }
+.pstep .pn, .pdash { font-size: 54px; color: var(--ye); min-width: 34px; line-height: 1; }
+.plist .prow { display: flex; gap: 10px; padding: 2px 0; }
+.plist .prow .nm { flex: 1; }
+.plist .prow.me { background: var(--bl); }
+/* ---------- badges ---------- */
+.badges { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+.badge { padding: 6px; box-shadow: inset 0 0 0 2px #333; text-align: center; }
+.badge.on { box-shadow: inset 0 0 0 2px var(--ye); background: #1a1a00; }
+.badge.on.shame { box-shadow: inset 0 0 0 2px var(--re); background: #200; }
+.badge.off { opacity: .45; }
+.badge .bi { font-size: 34px; line-height: 1.1; }
+.badge .bn { text-transform: uppercase; color: var(--ye); }
+.badge.shame .bn { color: var(--re); }
+.badge .bx { color: var(--wh); }
+.badge .bd { font-size: 16px; color: var(--cy); }
+.badge .bp { color: var(--dim); }
+/* ---------- partners & rivals ---------- */
+.rel { padding: 2px 0; }
+.rel b { font-weight: normal; }
+.h2h { margin-top: 8px; padding: 6px 8px; box-shadow: inset 0 0 0 2px var(--bl); }
+.h2h > div { padding: 2px 0; }
+.h2h b { font-weight: normal; }

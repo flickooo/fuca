@@ -1,5 +1,7 @@
 // Fudbal Manager — zero-dependency server (Node >= 22.13, uses built-in node:sqlite)
 'use strict';
+// Match times are stored as local wall-clock time; interpret them in the group's timezone.
+process.env.TZ = process.env.TZ || 'Europe/Belgrade';
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -99,6 +101,21 @@ addCol('matches', 'ended_at', 'TEXT');
 addCol('players', 'pin_hash', 'TEXT');
 addCol('news', 'match_id', 'INTEGER');
 addCol('matches', 'clock_started', 'INTEGER NOT NULL DEFAULT 0');
+addCol('news', 'ukey', 'TEXT');
+db.exec(`CREATE TABLE IF NOT EXISTS predictions (
+  match_id INTEGER NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
+  player_id INTEGER NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+  a INTEGER NOT NULL, b INTEGER NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  PRIMARY KEY (match_id, player_id)
+);
+CREATE TABLE IF NOT EXISTS late_drops (
+  match_id INTEGER NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
+  player_id INTEGER NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+  at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  PRIMARY KEY (match_id, player_id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS news_ukey ON news(ukey) WHERE ukey IS NOT NULL;`);
 addCol('players', 'is_guest', 'INTEGER NOT NULL DEFAULT 0');
 addCol('sessions', 'elevated', 'INTEGER NOT NULL DEFAULT 0');
 addCol('attendance', 'invited_by', 'INTEGER');
@@ -285,6 +302,23 @@ const motmInfo = (m, user) => {
     votes: total, voters, counts, winners: open ? [] : motmWinners(m.id) };
 };
 
+// ---- score predictions ----
+const PRED_EXACT = 3, PRED_RESULT = 1;
+const predLocked = (m) => m.status !== 'upcoming' || !!m.clock_started || Date.now() >= Date.parse(m.starts_at);
+const sign = (x) => (x > 0 ? 1 : x < 0 ? -1 : 0);
+const predScore = (p, m) => {
+  if (m.status !== 'played' || m.score_a == null || m.score_b == null) return null;
+  if (p.a === m.score_a && p.b === m.score_b) return PRED_EXACT;
+  return sign(p.a - p.b) === sign(m.score_a - m.score_b) ? PRED_RESULT : 0;
+};
+const predInfo = (m, user) => {
+  if (m.status === 'cancelled') return null;
+  const locked = predLocked(m);
+  const all = db.prepare('SELECT player_id, a, b FROM predictions WHERE match_id=? ORDER BY created_at').all(m.id);
+  const mine = all.find((p) => p.player_id === user.id) || null;
+  return { locked, count: all.length, mine, list: locked ? all.map((p) => ({ ...p, score: predScore(p, m) })) : [] };
+};
+
 const matchDetail = (id, user) => {
   const m = db.prepare('SELECT * FROM matches WHERE id=?').get(id);
   if (!m) throw new HttpError(404, 'Match not found');
@@ -299,7 +333,7 @@ const matchDetail = (id, user) => {
   const goals = db.prepare('SELECT id, team, scorer_id, assist_id, own_goal, created_by, created_at FROM goals WHERE match_id=? ORDER BY id').all(id)
     .map((g) => ({ ...g, own_goal: !!g.own_goal }));
   return { ...m, lineup_published: !!m.lineup_published, capacity: cap, attendance, lineup, goals,
-    motm: motmInfo(m, user), points: matchPoints(m), my_status: mine ? mine.status : null };
+    motm: motmInfo(m, user), points: matchPoints(m), predictions: predInfo(m, user), my_status: mine ? mine.status : null };
 };
 
 const requireAdmin = (u) => { if (!u.is_admin) throw new HttpError(403, 'Admins only'); };
@@ -465,6 +499,7 @@ route('PUT', '/api/matches/:id', (req, res, { user, body, params }) => {
   const ended_at = f.status === 'played' ? (ex.ended_at || new Date().toISOString()) : null;
   db.prepare(`UPDATE matches SET starts_at=?, location=?, team_size=?, team_a_name=?, team_b_name=?, notes=?, status=?, score_a=?, score_b=?, ended_at=? WHERE id=?`)
     .run(f.starts_at, f.location, f.team_size, f.team_a_name, f.team_b_name, f.notes, f.status, f.score_a, f.score_b, ended_at, ex.id);
+  if (f.status === 'played') { try { announceMilestones(); } catch (e) { console.error(e); } }
   send(res, 200, { ok: true });
 });
 
@@ -481,6 +516,12 @@ route('POST', '/api/matches/:id/attendance', (req, res, { user, body, params }) 
   if (body.player_id != null && Number(body.player_id) !== user.id) { requireAdmin(user); pid = Number(body.player_id); }
   if (m.status !== 'upcoming' && !user.is_admin) bad('This match is closed');
   const status = body.status;
+  // Dropping out less than 24h before kick-off is remembered (for the "Late dropper" badge). Re-joining clears it.
+  const prev = db.prepare('SELECT status FROM attendance WHERE match_id=? AND player_id=?').get(m.id, pid);
+  const untilKo = Date.parse(m.starts_at) - Date.now();
+  if (prev?.status === 'in' && status !== 'in' && untilKo < 24 * 3600e3 && untilKo > -3 * 3600e3 && pid === user.id)
+    db.prepare('INSERT OR IGNORE INTO late_drops(match_id, player_id) VALUES(?,?)').run(m.id, pid);
+  if (status === 'in') db.prepare('DELETE FROM late_drops WHERE match_id=? AND player_id=?').run(m.id, pid);
   if (status === null || status === 'none') {
     db.prepare('DELETE FROM attendance WHERE match_id=? AND player_id=?').run(m.id, pid);
   } else if (['in', 'out'].includes(status)) {
@@ -607,6 +648,20 @@ route('POST', '/api/matches/:id/fulltime', (req, res, { user, params }) => {
   if (m.status !== 'played') {
     syncScore(m.id);
     db.prepare(`UPDATE matches SET status='played', ended_at=? WHERE id=?`).run(new Date().toISOString(), m.id);
+    try { announceMilestones(); } catch (e) { console.error(e); }
+  }
+  send(res, 200, { match: matchDetail(m.id, user) });
+});
+
+route('POST', '/api/matches/:id/prediction', (req, res, { user, body, params }) => {
+  const m = db.prepare('SELECT * FROM matches WHERE id=?').get(Number(params.id));
+  if (!m) throw new HttpError(404, 'Match not found');
+  if (predLocked(m)) bad('Predictions are locked — the match has started');
+  if (body.clear) db.prepare('DELETE FROM predictions WHERE match_id=? AND player_id=?').run(m.id, user.id);
+  else {
+    const a = int(body.a, 'Score', 0, 30), b = int(body.b, 'Score', 0, 30);
+    db.prepare(`INSERT INTO predictions(match_id, player_id, a, b) VALUES(?,?,?,?)
+      ON CONFLICT(match_id, player_id) DO UPDATE SET a=excluded.a, b=excluded.b, created_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')`).run(m.id, user.id, a, b);
   }
   send(res, 200, { match: matchDetail(m.id, user) });
 });
@@ -702,8 +757,11 @@ route('GET', '/api/players/:id/profile', (req, res, { user, params }) => {
     .sort((a, b) => b.pct - a.pct || b.games - a.games)[0] || null;
   const signups = db.prepare(`SELECT SUM(a.status='in') AS ins, SUM(a.status='out') AS outs FROM attendance a JOIN matches m ON m.id=a.match_id
     WHERE a.player_id=? AND m.status<>'cancelled'`).get(p.id);
+  const hist = buildHistory();
+  const badges = p.is_guest ? [] : playerBadges(p.id, hist);
+  const rel = relations(p.id, hist);
   const ability_history = db.prepare(`SELECT old_val, new_val, body, created_at FROM news WHERE kind='ability' AND player_id=? ORDER BY id DESC LIMIT 10`).all(p.id);
-  send(res, 200, { ability_history, player: pubPlayer(p, false), totals: {
+  send(res, 200, { ability_history, badges, ...rel, player: pubPlayer(p, false), totals: {
     played: list.length, won: count('W'), drawn: count('D'), lost: count('L'), goals: sum('goals'), assists: sum('assists'),
     motm: sum('motm'), own_goals: sum('own_goals'), win_pct: list.length ? Math.round(count('W') / list.length * 100) : 0,
     signed_in: signups.ins || 0, signed_out: signups.outs || 0,
@@ -796,6 +854,142 @@ route('PUT', '/api/settings/points', (req, res, { user, body }) => {
   send(res, 200, { rules });
 });
 
+// ---------- match history (used by milestones, badges, rivalries) ----------
+// One entry per played match (oldest first) with every line-up player's result, goals, assists, keeper data.
+const buildHistory = () => {
+  const ms = db.prepare(`SELECT * FROM matches WHERE status='played' AND score_a IS NOT NULL AND score_b IS NOT NULL ORDER BY starts_at, id`).all();
+  const lineups = {}, goals = {};
+  for (const l of db.prepare('SELECT match_id, player_id, team, slot FROM lineups').all()) (lineups[l.match_id] ||= []).push(l);
+  for (const g of db.prepare('SELECT match_id, team, scorer_id, assist_id, own_goal FROM goals').all()) (goals[g.match_id] ||= []).push(g);
+  return ms.map((m) => {
+    const gs = goals[m.id] || [];
+    const players = (lineups[m.id] || []).map((l) => {
+      const f = l.team === 'A' ? m.score_a : m.score_b, a = l.team === 'A' ? m.score_b : m.score_a;
+      return { pid: l.player_id, team: l.team, gk: l.slot === 0, sub: l.slot >= 100, for: f, against: a,
+        res: f > a ? 'W' : f < a ? 'L' : 'D',
+        goals: gs.filter((g) => g.scorer_id === l.player_id && !g.own_goal).length,
+        assists: gs.filter((g) => g.assist_id === l.player_id).length };
+    });
+    return { m, players };
+  });
+};
+const guestIds = () => new Set(db.prepare('SELECT id FROM players WHERE is_guest=1').all().map((r) => r.id));
+const pnameOf = (id) => db.prepare('SELECT name FROM players WHERE id=?').get(id)?.name || '?';
+const scoreLine = (m) => `${m.team_a_name} ${m.score_a}-${m.score_b} ${m.team_b_name}`;
+const postNews = (ukey, title, body, player_id, match_id, at) =>
+  db.prepare(`INSERT OR IGNORE INTO news(kind, title, body, player_id, match_id, ukey, created_at) VALUES('milestone',?,?,?,?,?,?)`)
+    .run(title, body, player_id, match_id, ukey, at);
+
+// ---------- automatic milestone announcements ----------
+// Runs after full time and every few minutes; each milestone is posted once (unique ukey).
+// Only matches that ended in the last 7 days are announced, so deploying this doesn't flood the news with old records.
+const MS_GOALS = [10, 25, 50, 75, 100, 150, 200, 250, 300], MS_APPS = [10, 25, 50, 75, 100, 150, 200], MS_ASSISTS = [10, 25, 50, 75, 100];
+const announceMilestones = () => {
+  const hist = buildHistory(), guests = guestIds(), now = Date.now();
+  const tot = {}; // running totals per player
+  for (const { m, players } of hist) {
+    const endIso = m.ended_at || new Date(Date.parse(m.starts_at)).toISOString();
+    const recent = now - Date.parse(endIso) < 7 * 864e5 && Date.parse(endIso) <= now;
+    for (const p of players) {
+      const t = tot[p.pid] ||= { apps: 0, goals: 0, assists: 0, streak: 0 };
+      const before = { ...t };
+      t.apps++; t.goals += p.goals; t.assists += p.assists; t.streak = p.res === 'W' ? t.streak + 1 : 0;
+      if (!recent || guests.has(p.pid)) continue;
+      const name = pnameOf(p.pid).toUpperCase(), sl = scoreLine(m);
+      if (p.goals >= 3) postNews(`hat:${m.id}:${p.pid}`, `⚽ ${p.goals === 3 ? 'HAT-TRICK' : p.goals + ' GOALS'}: ${name}`, `${p.goals} goals · ${sl}`, p.pid, m.id, endIso);
+      if (p.assists >= 3) postNews(`ast:${m.id}:${p.pid}`, `🎯 ${p.assists} ASSISTS: ${name}`, `Playmaker of the day · ${sl}`, p.pid, m.id, endIso);
+      for (const th of MS_GOALS) if (before.goals < th && t.goals >= th) postNews(`goals:${p.pid}:${th}`, `⚽ ${th} GOALS: ${name}`, `Reached ${th} goals in ${t.apps} games`, p.pid, m.id, endIso);
+      for (const th of MS_ASSISTS) if (before.assists < th && t.assists >= th) postNews(`assists:${p.pid}:${th}`, `🎯 ${th} ASSISTS: ${name}`, `Reached ${th} assists in ${t.apps} games`, p.pid, m.id, endIso);
+      for (const th of MS_APPS) if (before.apps < th && t.apps >= th) postNews(`apps:${p.pid}:${th}`, `🏟 ${th} GAMES: ${name}`, `${t.goals} goal${t.goals === 1 ? '' : 's'} and ${t.assists} assist${t.assists === 1 ? '' : 's'} so far`, p.pid, m.id, endIso);
+      if (t.streak > 0 && t.streak % 5 === 0) postNews(`streak:${p.pid}:${m.id}`, `🔥 ${t.streak} WINS IN A ROW: ${name}`, `Latest: ${sl}`, p.pid, m.id, endIso);
+      if (p.gk && !p.sub && p.against === 0) postNews(`cs:${m.id}:${p.pid}`, `🧤 CLEAN SHEET: ${name}`, `Kept a clean sheet · ${sl}`, p.pid, m.id, endIso);
+    }
+    if (recent) {
+      const exact = db.prepare('SELECT player_id FROM predictions WHERE match_id=? AND a=? AND b=?').all(m.id, m.score_a, m.score_b).map((r) => r.player_id);
+      if (exact.length) postNews(`pred:${m.id}`, `🔮 CALLED IT: ${exact.map((id) => pnameOf(id).toUpperCase()).join(' & ')}`,
+        `Predicted ${m.score_a}-${m.score_b} exactly · +${PRED_EXACT} in the predictor league`, exact[0], m.id, endIso);
+    }
+  }
+};
+
+// ---------- badges ----------
+const BADGES = [
+  { key: 'iron', icon: '🏋', name: 'Iron Man', desc: 'Played 10 matches in a row', tone: 'good' },
+  { key: 'sniper', icon: '⚽', name: 'Sniper', desc: 'Scored a hat-trick', tone: 'good' },
+  { key: 'playmaker', icon: '🎯', name: 'Playmaker', desc: '3 assists in one match', tone: 'good' },
+  { key: 'wall', icon: '🧤', name: 'The Wall', desc: 'Clean sheet in goal', tone: 'good' },
+  { key: 'streak', icon: '🔥', name: 'Hot Streak', desc: '5 wins in a row', tone: 'good' },
+  { key: 'veteran', icon: '🏟', name: 'Veteran', desc: '25 matches played', tone: 'good' },
+  { key: 'motm', icon: '★', name: 'MOTM King', desc: 'Man of the match 3 times', tone: 'good' },
+  { key: 'oracle', icon: '🔮', name: 'Oracle', desc: 'Predicted an exact score', tone: 'good' },
+  { key: 'reliable', icon: '✅', name: 'Mr Reliable', desc: '10 sign-ups, never dropped out late', tone: 'good' },
+  { key: 'late', icon: '🙈', name: 'Late Dropper', desc: 'Dropped out less than 24h before kick-off', tone: 'shame' },
+];
+const playerBadges = (pid, hist) => {
+  let run = 0, bestRun = 0, streak = 0, bestStreak = 0, sniper = 0, playmaker = 0, wall = 0, apps = 0;
+  for (const { players } of hist) {
+    const p = players.find((x) => x.pid === pid);
+    if (!p) { run = 0; continue; }
+    apps++; run++; bestRun = Math.max(bestRun, run);
+    streak = p.res === 'W' ? streak + 1 : 0; bestStreak = Math.max(bestStreak, streak);
+    if (p.goals >= 3) sniper++;
+    if (p.assists >= 3) playmaker++;
+    if (p.gk && !p.sub && p.against === 0) wall++;
+  }
+  let motm = 0;
+  for (const { m } of hist) { const c = voteClosesAt(m); if (c && Date.now() >= Date.parse(c) && motmWinners(m.id).includes(pid)) motm++; }
+  let oracle = 0;
+  for (const pr of db.prepare(`SELECT p.a, p.b, m.* FROM predictions p JOIN matches m ON m.id=p.match_id WHERE p.player_id=? AND m.status='played'`).all(pid))
+    if (pr.a === pr.score_a && pr.b === pr.score_b) oracle++;
+  const late = db.prepare('SELECT COUNT(*) AS n FROM late_drops WHERE player_id=?').get(pid).n;
+  const signups = db.prepare(`SELECT COUNT(*) AS n FROM attendance a JOIN matches m ON m.id=a.match_id WHERE a.player_id=? AND a.status='in' AND m.status<>'cancelled'`).get(pid).n;
+  const v = {
+    iron: [bestRun >= 10 ? 1 : 0, `best run ${bestRun}/10`], sniper: [sniper, ''], playmaker: [playmaker, ''], wall: [wall, ''],
+    streak: [bestStreak >= 5 ? Math.floor(bestStreak / 5) : 0, `best ${bestStreak}/5`], veteran: [apps >= 25 ? 1 : 0, `${apps}/25`],
+    motm: [motm >= 3 ? 1 : 0, `${motm}/3`], oracle: [oracle, ''], reliable: [signups >= 10 && !late ? 1 : 0, late ? 'dropped late' : `${signups}/10`], late: [late, ''],
+  };
+  return BADGES.map((b) => ({ ...b, count: v[b.key][0], earned: v[b.key][0] > 0, progress: v[b.key][1] }));
+};
+
+// ---------- partnerships & rivalries ----------
+const relations = (pid, hist) => {
+  const w = {}, o = {};
+  for (const { players } of hist) {
+    const me = players.find((x) => x.pid === pid);
+    if (!me) continue;
+    for (const x of players) {
+      if (x.pid === pid) continue;
+      const bucket = x.team === me.team ? w : o;
+      const r = bucket[x.pid] ||= { games: 0, W: 0, D: 0, L: 0 };
+      r.games++; r[me.res]++;
+    }
+  }
+  const list = (b) => Object.entries(b).filter(([id, r]) => r.games >= 3).map(([id, r]) => ({ id: Number(id), ...r, pct: Math.round((r.W / r.games) * 100) }));
+  const wl = list(w).sort((a, b) => b.pct - a.pct || b.games - a.games);
+  const ol = list(o).sort((a, b) => a.pct - b.pct || b.games - a.games);
+  return {
+    best_mates: wl.slice(0, 3),
+    worst_mate: wl.length > 3 ? wl[wl.length - 1] : null,
+    nemesis: ol[0] && ol[0].pct < 50 ? ol[0] : null,
+    victim: ol.length > 1 && ol[ol.length - 1].pct > 50 ? ol[ol.length - 1] : null,
+  };
+};
+
+route('GET', '/api/h2h/:a/:b', (req, res, { params }) => {
+  const a = Number(params.a), b = Number(params.b);
+  const r = { together: { games: 0, W: 0, D: 0, L: 0 }, against: { games: 0, a: 0, b: 0, draws: 0, a_goals: 0, b_goals: 0 } };
+  for (const { players } of buildHistory()) {
+    const pa = players.find((x) => x.pid === a), pb = players.find((x) => x.pid === b);
+    if (!pa || !pb) continue;
+    if (pa.team === pb.team) { r.together.games++; r.together[pa.res]++; }
+    else {
+      r.against.games++; r.against.a_goals += pa.goals; r.against.b_goals += pb.goals;
+      if (pa.res === 'W') r.against.a++; else if (pa.res === 'L') r.against.b++; else r.against.draws++;
+    }
+  }
+  send(res, 200, r);
+});
+
 // ---------- automatic man-of-the-match announcements ----------
 // Voting closes by time, so check regularly and post once per match (only votes that closed in the last 7 days).
 const announceMotm = () => {
@@ -817,13 +1011,13 @@ const announceMotm = () => {
     console.log(`[news] MOTM announced for match ${m.id}: ${names.join(' & ')}`);
   }
 };
-try { announceMotm(); } catch (e) { console.error(e); }
-setInterval(() => { try { announceMotm(); } catch (e) { console.error(e); } }, 5 * 60e3);
+try { announceMotm(); announceMilestones(); } catch (e) { console.error(e); }
+setInterval(() => { try { announceMotm(); announceMilestones(); } catch (e) { console.error(e); } }, 5 * 60e3);
 
 // ---------- routes: news ----------
 const newsRow = (n) => ({ ...n, pinned: !!n.pinned });
 route('GET', '/api/news', (req, res, { query }) => {
-  announceMotm();
+  announceMotm(); announceMilestones();
   const limit = Math.min(Number(query.get('limit')) || 50, 200);
   const rows = db.prepare('SELECT * FROM news ORDER BY pinned DESC, id DESC LIMIT ?').all(limit).map(newsRow);
   const latest = db.prepare('SELECT MAX(id) AS id FROM news').get().id || 0;
@@ -852,6 +1046,17 @@ route('DELETE', '/api/news/:id', (req, res, { user, params }) => {
   db.prepare('DELETE FROM news WHERE id=?').run(Number(params.id));
   send(res, 200, { ok: true });
 });
+
+const predictorTable = () => {
+  const rows = {};
+  for (const x of db.prepare(`SELECT p.player_id, p.a, p.b, m.* FROM predictions p JOIN matches m ON m.id=p.match_id
+      JOIN players pl ON pl.id=p.player_id WHERE m.status='played' AND pl.active=1`).all()) {
+    const s = predScore(x, x);
+    const r = rows[x.player_id] ||= { id: x.player_id, n: 0, exact: 0, result: 0, pts: 0 };
+    r.n++; r.pts += s; if (s === PRED_EXACT) r.exact++; else if (s === PRED_RESULT) r.result++;
+  }
+  return Object.values(rows).sort((a, b) => b.pts - a.pts || b.exact - a.exact || a.n - b.n);
+};
 
 // ---------- routes: stats ----------
 route('GET', '/api/stats', (req, res) => {
@@ -893,6 +1098,7 @@ route('GET', '/api/stats', (req, res) => {
       rating: r.rating, points: r2(pMap[r.id]?.pts || 0), ppg: r.played ? r2((pMap[r.id]?.pts || 0) / r.played) : 0,
       gk_games: pMap[r.id]?.gk_games || 0, conceded: pMap[r.id]?.conceded || 0, clean_blocks: pMap[r.id]?.blocks || 0 })),
     rules: R,
+    predictors: predictorTable(),
   });
 });
 

@@ -240,6 +240,7 @@ async function viewMatch(id) {
           </div>
         </div>
         ${m.goals.length || played ? `<div class="panel"><div class="panel-h">${played ? 'Result' : 'Goals'}<span class="spacer"></span>${played ? '<button class="btn sm" id="report">Share report</button>' : ''}</div><div class="panel-b">${m.goals.length ? scorersHtml(m) + goalTimeline(m) : '<span class="dim">No goals were recorded live.</span>'}${pointsHtml(m)}</div></div>` : ''}
+        ${m.predictions ? predHtml(m) : ''}
         ${m.motm ? motmHtml(m) : ''}
         <div class="panel"><div class="panel-h">Teams</div><div class="panel-b">
           ${m.lineup_published ? `<div class="btn-row"><a class="btn" href="#/tactics/${m.id}">View line-up ›</a>
@@ -264,6 +265,17 @@ async function viewMatch(id) {
     $$('[data-paid]', v).forEach((b) => (b.onclick = async () => {
       try { const r = await api('POST', `/api/matches/${m.id}/paid`, { player_id: Number(b.dataset.paid), paid: b.dataset.v === '1' }); render(r.match); } catch (e) { fail(e); }
     }));
+    const pf = $('#predf', v);
+    if (pf) {
+      const val = (k) => Number(pf.dataset[k]);
+      const show = () => { $('#pa', v).textContent = val('a'); $('#pb', v).textContent = val('b'); };
+      $$('[data-step]', pf).forEach((b) => (b.onclick = () => { const [k, d] = b.dataset.step.split(':'); pf.dataset[k] = Math.max(0, Math.min(30, val(k) + Number(d))); show(); }));
+      $('#predsave', v).onclick = async () => {
+        try { const r = await api('POST', `/api/matches/${m.id}/prediction`, { a: val('a'), b: val('b') }); toast('Prediction saved'); render(r.match); } catch (e) { fail(e); }
+      };
+      const clr = $('#predclear', v);
+      if (clr) clr.onclick = async () => { try { const r = await api('POST', `/api/matches/${m.id}/prediction`, { clear: true }); render(r.match); } catch (e) { fail(e); } };
+    }
     $$('[data-vote]', v).forEach((b) => (b.onclick = async () => {
       try { const r = await api('POST', `/api/matches/${m.id}/motm`, { player_id: Number(b.dataset.vote) }); render(r.match); toast('Vote saved'); } catch (e) { fail(e); }
     }));
@@ -280,6 +292,31 @@ async function viewMatch(id) {
     if (sh) sh.onclick = () => shareMatch(m);
   };
   render(m);
+}
+
+// ---------- score predictions ----------
+function predHtml(m) {
+  const P = m.predictions;
+  if (!P) return '';
+  const A = esc(m.team_a_name.toUpperCase()), B = esc(m.team_b_name.toUpperCase());
+  if (!P.locked) {
+    const a = P.mine ? P.mine.a : 0, b = P.mine ? P.mine.b : 0;
+    return `<div class="panel"><div class="panel-h" style="background:var(--cy);color:#000">🔮 Predict the score<span class="spacer"></span><span class="sub">${P.count} guess${P.count === 1 ? '' : 'es'}</span></div>
+      <div class="panel-b"><div class="pred" id="predf" data-a="${a}" data-b="${b}">
+        <div class="pside"><div class="pt A">${A}</div><div class="pstep"><button class="btn sm" data-step="a:-1">−</button><span class="pn" id="pa">${a}</span><button class="btn sm" data-step="a:1">+</button></div></div>
+        <div class="pdash">-</div>
+        <div class="pside"><div class="pt B">${B}</div><div class="pstep"><button class="btn sm" data-step="b:-1">−</button><span class="pn" id="pb">${b}</span><button class="btn sm" data-step="b:1">+</button></div></div>
+      </div>
+      <div class="btn-row" style="justify-content:center;margin-top:8px"><button class="btn primary" id="predsave">${P.mine ? 'Update guess' : 'Save guess'}</button>${P.mine ? '<button class="btn sm ghost" id="predclear">Remove</button>' : ''}</div>
+      <p class="dim" style="font-size:17px;text-align:center;margin:8px 0 0">${P.mine ? `Your guess: <span class="y">${P.mine.a}-${P.mine.b}</span> · ` : ''}Hidden until kick-off. Exact score +3, right result +1 in the Predictor league.</p></div></div>`;
+  }
+  if (!P.list.length) return '';
+  const played = m.status === 'played';
+  const rows = [...P.list].sort((x, y) => (y.score ?? 0) - (x.score ?? 0)).map((x) => `<div class="prow ${x.player_id === S.me.id ? 'me' : ''}">
+    <span class="nm">${esc(pname(x.player_id).toUpperCase())}</span><span class="y">${x.a}-${x.b}</span>
+    ${played ? `<span class="${x.score === 3 ? 'g' : x.score === 1 ? 'c' : 'dim'}">${x.score === 3 ? '🔮 +3' : x.score === 1 ? '+1' : '0'}</span>` : ''}</div>`).join('');
+  return `<div class="panel"><div class="panel-h" style="background:var(--cy);color:#000">🔮 Predictions<span class="spacer"></span><span class="sub">${played ? 'final' : 'locked'}</span></div>
+    <div class="panel-b"><div class="plist">${rows}</div></div></div>`;
 }
 
 // ---------- points earned in a match ----------
@@ -511,6 +548,11 @@ function newsItem(n, full) {
     head = `<span class="m">★ MAN OF THE MATCH</span>`;
     bodyHtml = `<div class="nabl"><b class="y">${esc(n.title.split(': ').slice(1).join(': '))}</b></div>
       <div class="nbody">${n.match_id ? `<a class="plink c" href="#/match/${n.match_id}">${esc(n.body)} ›</a>` : esc(n.body)}</div>`;
+  } else if (n.kind === 'milestone') {
+    const [label, ...rest] = n.title.split(': ');
+    head = `<span class="c">${esc(label)}</span>`;
+    bodyHtml = `<div class="nabl"><b class="y">${n.player_id ? `<a class="plink" href="#/player/${n.player_id}">${esc(rest.join(': '))}</a>` : esc(rest.join(': '))}</b></div>
+      <div class="nbody">${n.match_id ? `<a class="plink dim" href="#/match/${n.match_id}">${esc(n.body)} ›</a>` : esc(n.body)}</div>`;
   } else head = `<span class="y">${esc(n.title.toUpperCase())}</span>`;
   return `<div class="news-item ${n.pinned ? 'pinned' : ''} ${n.id > newsSeen() ? 'unread' : ''}">
     <div class="nhead">${n.pinned ? '<span class="m">📌</span> ' : ''}${head}<span class="spacer"></span><span class="dim nd">${fmtStamp(n.created_at)}</span></div>
@@ -524,7 +566,7 @@ function newsItem(n, full) {
 }
 function newsShare(n) {
   const who = n.player_id && S.pmap[n.player_id];
-  const text = n.kind === 'motm' ? `📺 *FUDBAL TEXT P101*\n⭐ *${n.title}*\n${n.body}` : n.kind === 'ability'
+  const text = n.kind === 'milestone' ? `📺 *FUDBAL TEXT P101*\n*${n.title}*\n${n.body}` : n.kind === 'motm' ? `📺 *FUDBAL TEXT P101*\n⭐ *${n.title}*\n${n.body}` : n.kind === 'ability'
     ? `📺 *FUDBAL TEXT P101*\n${n.new_val > n.old_val ? '▲ ABILITY UP' : '▼ ABILITY DOWN'}: *${who?.name || ''}* ${n.old_val} → ${n.new_val}${n.body ? `\n${n.body}` : ''}`
     : `📺 *FUDBAL TEXT P101*\n*${n.title}*${n.body ? `\n${n.body}` : ''}`;
   window.open(`https://wa.me/?text=${encodeURIComponent(text + `\n\n${location.origin}/#/news`)}`, '_blank');
@@ -637,7 +679,7 @@ function shareReport(m) {
 async function viewProfile(id) {
   const v = mount('stats');
   await loadPlayers();
-  const { player: p, totals: t, games, best_mate, ability_history: ah } = await api('GET', `/api/players/${id}/profile`);
+  const { player: p, totals: t, games, ability_history: ah, badges = [], best_mates = [], worst_mate, nemesis, victim } = await api('GET', `/api/players/${id}/profile`);
   const form = games.slice(0, 5);
   const chip = (r) => `<span class="res res-${r}">${r}</span>`;
   const tile = (n, l, cls = '') => `<div class="tile"><div class="n ${cls}">${n}</div><div class="l">${l}</div></div>`;
@@ -651,14 +693,22 @@ async function viewProfile(id) {
         ${tile(t.win_pct + '%', 'Win rate', 'g')}${tile(`${t.won}-${t.drawn}-${t.lost}`, 'W-D-L', 'wdl')}
         ${t.played ? tile(((t.goals) / t.played).toFixed(1), 'Goals/game', 'y') : ''}${p.is_guest ? '' : tile(t.signed_in, 'Sign-ups')}
       </div>
-      ${best_mate && S.pmap[best_mate.id] ? `<p class="muted">Best partner: <a class="plink" href="#/player/${best_mate.id}">${esc(S.pmap[best_mate.id].name.toUpperCase())}</a>
-        — <span class="g">${best_mate.pct}% wins</span> in ${best_mate.games} games together</p>` : ''}
       ${t.own_goals ? `<p class="r" style="margin:0">Own goals: ${t.own_goals} 🙈</p>` : ''}
       ${ah && ah.length ? `<div class="c" style="margin-top:8px">ABILITY HISTORY</div>${ah.map((h) => `<div class="ahist"><span class="dim">${fmtShort(h.created_at)}</span>
         <span class="${ablCls(h.old_val)}">${h.old_val}</span> → <b class="${ablCls(h.new_val)}">${h.new_val}</b> <span class="${h.new_val > h.old_val ? 'g' : 'r'}">${h.new_val > h.old_val ? '▲' : '▼'}</span>
         ${h.body ? `<span class="dim">· ${esc(h.body)}</span>` : ''}</div>`).join('')}` : ''}
     </div>
   </div>
+  ${badges.length ? `<div class="panel"><div class="panel-h" style="background:var(--ye);color:#000">Badges<span class="spacer"></span><span class="sub">${badges.filter((b) => b.earned && b.tone !== 'shame').length}/${badges.filter((b) => b.tone !== 'shame').length}</span></div>
+    <div class="panel-b badges">${[...badges].sort((x, y) => y.earned - x.earned).map((b) => `<div class="badge ${b.earned ? 'on' : 'off'} ${b.tone}">
+      <div class="bi">${b.icon}</div><div class="bn">${esc(b.name)}${b.earned && b.count > 1 ? ` <span class="bx">×${b.count}</span>` : ''}</div>
+      <div class="bd">${esc(b.desc)}${!b.earned && b.progress ? ` <span class="bp">(${esc(b.progress)})</span>` : ''}</div></div>`).join('')}</div></div>` : ''}
+  <div class="panel"><div class="panel-h" style="background:var(--gr);color:#000">Partners &amp; rivals</div><div class="panel-b">
+    ${relHtml(best_mates, worst_mate, nemesis, victim)}
+    <div class="c" style="margin-top:10px">HEAD-TO-HEAD</div>
+    <div class="btn-row"><select id="h2hsel" style="max-width:260px"><option value="">Compare with…</option>${S.players.filter((x) => x.active && x.id !== p.id && !x.is_guest).map((x) => `<option value="${x.id}">${esc(x.name)}</option>`).join('')}</select></div>
+    <div id="h2hout"></div>
+  </div></div>
   <div class="panel"><div class="panel-h" style="background:var(--re);color:#fff">Recent matches</div>
     <div class="table-wrap"><table class="fm"><tbody>
     ${games.map((g) => `<tr class="click" data-m="${g.match_id}"><td>${chip(g.result)}</td><td>${fmtShort(g.starts_at)}</td>
@@ -669,6 +719,29 @@ async function viewProfile(id) {
   </div>
   <a class="btn ghost" href="#/stats">‹ Table</a>`;
   $$('tr[data-m]', v).forEach((tr) => (tr.onclick = () => (location.hash = `#/match/${tr.dataset.m}`)));
+  $('#h2hsel', v).onchange = async (e) => {
+    const other = Number(e.target.value), out = $('#h2hout', v);
+    if (!other) { out.innerHTML = ''; return; }
+    try {
+      const r = await api('GET', `/api/h2h/${p.id}/${other}`);
+      const A = esc(shortName(p.name).toUpperCase()), B = esc(shortName(S.pmap[other].name).toUpperCase());
+      const T = r.together, X = r.against;
+      out.innerHTML = `<div class="h2h">
+        <div><span class="c">TOGETHER</span> ${T.games ? `${T.games} games · <span class="g">${T.W}W</span> <span class="y">${T.D}D</span> <span class="r">${T.L}L</span> · <b class="g">${Math.round(T.W / T.games * 100)}%</b> wins` : '<span class="dim">never on the same team</span>'}</div>
+        <div><span class="c">AGAINST</span> ${X.games ? `${X.games} games · ${A} <b class="g">${X.a}</b> — <b class="y">${X.draws}</b> — <b class="r">${X.b}</b> ${B}
+          <div class="dim">Goals in those games: ${A} ${X.a_goals} · ${B} ${X.b_goals}</div>` : '<span class="dim">never played against each other</span>'}</div></div>`;
+    } catch (err) { fail(err); }
+  };
+}
+function relHtml(best, worst, nemesis, victim) {
+  const nm = (r) => (r && S.pmap[r.id] ? `<a class="plink" href="#/player/${r.id}">${esc(S.pmap[r.id].name.toUpperCase())}</a>` : '');
+  const rec = (r) => `<span class="dim">${r.games} games · ${r.W}-${r.D}-${r.L}</span>`;
+  const lines = [];
+  best.filter((r) => S.pmap[r.id]).forEach((r, i) => lines.push(`<div class="rel"><span class="g">${i ? '🤝' : '💚 BEST PARTNER'}</span> ${nm(r)} <b class="g">${r.pct}%</b> ${rec(r)}</div>`));
+  if (worst && S.pmap[worst.id]) lines.push(`<div class="rel"><span class="r">💔 WORST PARTNER</span> ${nm(worst)} <b class="r">${worst.pct}%</b> ${rec(worst)}</div>`);
+  if (nemesis && S.pmap[nemesis.id]) lines.push(`<div class="rel"><span class="m">😈 NEMESIS</span> ${nm(nemesis)} <span class="dim">you win</span> <b class="r">${nemesis.pct}%</b> ${rec(nemesis)}</div>`);
+  if (victim && S.pmap[victim.id]) lines.push(`<div class="rel"><span class="y">😎 FAVOURITE VICTIM</span> ${nm(victim)} <span class="dim">you win</span> <b class="g">${victim.pct}%</b> ${rec(victim)}</div>`);
+  return lines.join('') || '<p class="dim" style="margin:0">Needs at least 3 games with or against someone — keep playing!</p>';
 }
 
 function shareMatch(m) {
@@ -970,7 +1043,8 @@ async function viewFixtures() {
 let statSort = { key: 'pts', dir: -1 };
 async function viewStats() {
   const v = mount('stats');
-  const { players, total_played, rules: R } = await api('GET', '/api/stats');
+  const { players, total_played, rules: R, predictors = [] } = await api('GET', '/api/stats');
+  await loadPlayers();
   const rows = players.map((p) => ({ ...p, pct: p.played ? Math.round((p.won / p.played) * 100) : 0, pts: p.points, gd: p.gf - p.ga }));
   // [key, label, numeric, hideOnPhone, cell]
   const cols = [
@@ -998,6 +1072,12 @@ async function viewStats() {
         `<th class="sortable ${n ? 'num' : ''} ${h ? 'hide-sm' : ''} ${k === key ? 'sorted' : ''}" data-k="${k}">${l}${k === key ? (dir < 0 ? '▾' : '▴') : ''}</th>`).join('')}</tr></thead>
       <tbody>${rows.map((r, i) => `<tr class="${r.id === S.me.id ? 'sel' : ''}"><td class="num dim">${i + 1}</td>${cols.map((c) => c[4](r)).join('')}</tr>`).join('')}
       </tbody></table></div>
+      </div>
+      <div class="panel"><div class="panel-h" style="background:var(--cy);color:#000">🔮 Predictor league<span class="spacer"></span><span class="sub">exact +3 · result +1</span></div>
+        ${predictors.length ? `<div class="table-wrap"><table class="fm"><thead><tr><th class="num">#</th><th>Player</th><th class="num">Guesses</th><th class="num">Exact</th><th class="num">Result</th><th class="num">Pts</th></tr></thead><tbody>
+        ${predictors.filter((r) => S.pmap[r.id]).map((r, i) => `<tr class="${r.id === S.me.id ? 'sel' : ''}"><td class="num dim">${i + 1}</td><td class="name"><a class="plink" href="#/player/${r.id}">${esc(S.pmap[r.id].name)}</a></td>
+          <td class="num">${r.n}</td><td class="num g">${r.exact}</td><td class="num c">${r.result}</td><td class="num pts"><b>${r.pts}</b></td></tr>`).join('')}
+        </tbody></table></div>` : '<div class="panel-b dim">No predictions scored yet — guess the score on the match page before kick-off.</div>'}
       </div>
       <div class="panel"><div class="panel-h" style="background:var(--ma);color:#fff">How points work</div><div class="panel-b rules">
         <div class="rgrid">
