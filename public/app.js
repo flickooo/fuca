@@ -27,7 +27,11 @@ const dt = (s) => new Date(s);
 const fmtTime = (s) => { const d = dt(s); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
 const fmtDate = (s) => { const d = dt(s); return `${DAYS[d.getDay()]} ${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}`; };
 const fmtShort = (s) => { const d = dt(s); return `${DAYS[d.getDay()]} ${d.getDate()} ${MONTHS[d.getMonth()]}`; };
-const stars = (n) => `<span class="stars">${'■'.repeat(n)}<span class="off">${'■'.repeat(5 - n)}</span></span>`;
+const ablCls = (n) => (n >= 8 ? 'g' : n >= 6 ? 'y' : n >= 4 ? 'c' : 'r');
+// ability 0-10: number + 10-step bar
+const stars = (n) => `<span class="abl"><b class="${ablCls(n)}">${n}</b><span class="stars">${'▮'.repeat(n)}<span class="off">${'▮'.repeat(10 - n)}</span></span></span>`;
+const ablOptions = (cur) => Array.from({ length: 11 }, (_, x) => `<option value="${x}" ${x === cur ? 'selected' : ''}>${x} ${'▮'.repeat(x)}${'▯'.repeat(10 - x)}</option>`).join('');
+const fmtPts = (x) => (Math.round(x * 100) / 100).toString();
 const posBadge = (p) => `<span class="pos ${esc(p)}">${esc(p)}</span>`;
 const initials = (name) => name.replace(/\(.*?\)/g, ' ').split(/\s+/).filter((w) => /^\p{L}/u.test(w)).map((w) => w[0]).join('').slice(0, 3).toUpperCase() || name.trim()[0].toUpperCase();
 const shortName = (name) => { const w = name.replace(/\(.*?\)/g, ' ').trim().split(/\s+/).filter(Boolean); return w.length > 1 ? w[w.length - 1] : (w[0] || name); };
@@ -220,7 +224,7 @@ async function viewMatch(id) {
                 mine.status === 'in' ? '<span class="g flash">YOU\'RE IN.</span> See you on the pitch!' : 'You\'re marked as not coming.'}</div>` : ''}
           </div>
         </div>
-        ${m.goals.length || played ? `<div class="panel"><div class="panel-h">${played ? 'Result' : 'Goals'}<span class="spacer"></span>${played ? '<button class="btn sm" id="report">Share report</button>' : ''}</div><div class="panel-b">${m.goals.length ? scorersHtml(m) : '<span class="dim">No goals were recorded live.</span>'}</div></div>` : ''}
+        ${m.goals.length || played ? `<div class="panel"><div class="panel-h">${played ? 'Result' : 'Goals'}<span class="spacer"></span>${played ? '<button class="btn sm" id="report">Share report</button>' : ''}</div><div class="panel-b">${m.goals.length ? scorersHtml(m) : '<span class="dim">No goals were recorded live.</span>'}${pointsHtml(m)}</div></div>` : ''}
         ${m.motm ? motmHtml(m) : ''}
         <div class="panel"><div class="panel-h">Teams</div><div class="panel-b">
           ${m.lineup_published ? `<div class="btn-row"><a class="btn" href="#/tactics/${m.id}">View line-up ›</a>
@@ -261,6 +265,17 @@ async function viewMatch(id) {
     if (sh) sh.onclick = () => shareMatch(m);
   };
   render(m);
+}
+
+// ---------- points earned in a match ----------
+function pointsHtml(m) {
+  const e = Object.entries(m.points || {}).filter(([pid]) => S.pmap[pid]).sort((a, b) => b[1].pts - a[1].pts);
+  if (!e.length) return '';
+  return `<div class="c" style="margin-top:10px">POINTS THIS MATCH</div><div class="mpts">${e.map(([pid, x]) => {
+    const team = m.lineup.find((l) => l.player_id === Number(pid))?.team;
+    return `<a class="plink" href="#/player/${pid}"><span class="chip-team ${team}"></span> ${esc(shortName(S.pmap[pid].name).toUpperCase())}${x.gk ? ' 🧤' : ''}
+      <b class="${x.pts >= 0 ? 'y' : 'r'}">${x.pts > 0 ? '+' : ''}${fmtPts(x.pts)}</b></a>`;
+  }).join('')}</div>`;
 }
 
 // ---------- goals / motm helpers ----------
@@ -358,7 +373,7 @@ async function viewLive(id) {
       <div class="panel-h" style="background:${ended ? 'var(--gr)' : 'var(--re)'};color:${ended ? '#000' : '#fff'}">${ended ? 'Full time' : m.kicked_off_at ? '<span class="flash">●</span> Live' : 'Ready'}
         <span class="spacer"></span><span class="sub">${fmtShort(m.starts_at)}</span></div>
       <div class="sb"><div class="t ta">${esc(m.team_a_name)}</div><div class="s">${m.score_a ?? 0}-${m.score_b ?? 0}</div><div class="t tb">${esc(m.team_b_name)}</div></div>
-      <div class="clk">${ended ? 'FULL TIME' : elapsed != null ? `${elapsed}' · tap the scorer` : 'Tap a scorer to start the clock'}</div>
+      <div class="clk">${ended ? 'FULL TIME' : elapsed != null ? `${elapsed}' · tap the scorer` : '<button class="btn primary" id="ko">▶ Kick off</button> <span class="dim">starts the clock (keepers earn clean-minute points)</span>'}</div>
       <div class="cols">${col('A')}${col('B')}</div>
       ${m.goals.length ? `<div class="panel-h" style="margin-top:12px">Goals<span class="spacer"></span><span class="sub">tap to fix assist · ✕ to undo</span></div><div class="feed">${feed}</div>` : ''}
       <div class="btn-row" style="margin-top:14px;justify-content:space-between">
@@ -396,6 +411,8 @@ async function viewLive(id) {
     };
     const cancel = $('#cancel', v); if (cancel) cancel.onclick = () => { sheet = null; draw(); };
     const bg = $('.sheet-bg', v); if (bg) bg.onclick = () => { sheet = null; draw(); };
+    const ko = $('#ko', v);
+    if (ko) ko.onclick = async () => { try { m = (await api('POST', `/api/matches/${m.id}/kickoff`)).match; toast('Kick off!'); draw(); } catch (err) { fail(err); } };
     const ft = $('#ft', v);
     if (ft) ft.onclick = async () => {
       if (!confirm(`End the match at ${m.score_a ?? 0}-${m.score_b ?? 0}? Man-of-the-match voting opens.`)) return;
@@ -432,7 +449,7 @@ async function guestForm(m, done) {
       <div class="form-grid">
         <label class="f"><span>Name</span><input type="text" name="name" placeholder="e.g. Marko's colleague Ivan" maxlength="40"></label>
         <label class="f"><span>Position</span><select name="position">${['GK', 'DEF', 'MID', 'FWD'].map((x) => `<option ${x === 'MID' ? 'selected' : ''}>${x}</option>`).join('')}</select></label>
-        <label class="f"><span>How good? (for team balance)</span><select name="rating">${[1, 2, 3, 4, 5].map((x) => `<option value="${x}" ${x === 3 ? 'selected' : ''}>${'■'.repeat(x)}${'□'.repeat(5 - x)}</option>`).join('')}</select></label>
+        <label class="f"><span>How good? (for team balance)</span><select name="rating">${ablOptions(5)}</select></label>
       </div>
       <div class="err" id="gerr"></div>
       <div class="btn-row" style="justify-content:flex-end"><button type="button" class="btn ghost" data-close>Cancel</button><button class="btn primary">Add guest</button></div>
@@ -491,6 +508,7 @@ async function viewProfile(id) {
     <div class="panel-b">
       <div class="form-line"><span class="c">FORM</span> ${form.length ? form.map((g) => chip(g.result)).join('') : '<span class="dim">no games yet</span>'}</div>
       <div class="tiles">
+        ${tile(fmtPts(t.points), 'Points', 'y')}${tile(t.played ? fmtPts(t.ppg) : '–', 'Pts/game', 'g')}${tile(`<span class="${ablCls(p.rating)}">${p.rating}</span>`, 'Ability')}
         ${tile(t.played, 'Apps')}${tile(t.goals, 'Goals', 'y')}${tile(t.assists, 'Assists', 'c')}${tile(t.motm, 'MOTM ★', 'm')}
         ${tile(t.win_pct + '%', 'Win rate', 'g')}${tile(`${t.won}-${t.drawn}-${t.lost}`, 'W-D-L', 'wdl')}
         ${t.played ? tile(((t.goals) / t.played).toFixed(1), 'Goals/game', 'y') : ''}${p.is_guest ? '' : tile(t.signed_in, 'Sign-ups')}
@@ -504,7 +522,7 @@ async function viewProfile(id) {
     <div class="table-wrap"><table class="fm"><tbody>
     ${games.map((g) => `<tr class="click" data-m="${g.match_id}"><td>${chip(g.result)}</td><td>${fmtShort(g.starts_at)}</td>
       <td class="num y">${g.for}-${g.against}</td><td class="hide-sm dim">${esc(g.team_name)}${g.sub ? ' (sub)' : ''}</td>
-      <td>${'⚽'.repeat(g.goals)}${g.assists ? ` <span class="c">${'A'.repeat(g.assists)}</span>` : ''}${g.motm ? ' <span class="m">★</span>' : ''}</td></tr>`).join('')
+      <td>${'⚽'.repeat(g.goals)}${g.assists ? ` <span class="c">${'A'.repeat(g.assists)}</span>` : ''}${g.motm ? ' <span class="m">★</span>' : ''}${g.gk ? ' <span class="c">🧤</span>' : ''}</td><td class="num y">${g.pts > 0 ? '+' : ''}${fmtPts(g.pts)}</td></tr>`).join('')
       || '<tr><td class="muted">No played matches yet.</td></tr>'}
     </tbody></table></div>
   </div>
@@ -570,7 +588,7 @@ function renderTactics(v) {
     const role = bench ? 'SUB' : s.role;
     return `<div class="slot ${team} ${p ? '' : 'empty'} ${role === 'GK' ? 'gk' : ''} ${sel ? 'sel' : ''} ${target ? 'target' : ''}" data-key="${key}" ${style} ${ed && p ? 'draggable="true"' : ''}>
       <div class="shirt">${p ? esc(initials(p.name)) : role}</div><div class="nm">${p ? esc(shortName(p.name)) : ed ? '+' : ''}</div>
-      ${p ? `<div class="pa ${!bench && p.position !== role ? 'oop' : ''}" title="${!bench && p.position !== role ? `Natural ${p.position}, playing ${role}` : ''}"><span class="pos ${p.position}">${p.position}</span><span class="bar">${'■'.repeat(p.rating)}<i>${'■'.repeat(5 - p.rating)}</i></span></div>` : ''}</div>`;
+      ${p ? `<div class="pa ${!bench && p.position !== role ? 'oop' : ''}" title="${!bench && p.position !== role ? `Natural ${p.position}, playing ${role}` : ''}"><span class="pos ${p.position}">${p.position}</span><span class="an ${ablCls(p.rating)}">${p.rating}</span></div>` : ''}</div>`;
   };
   const benchSlots = (team) => Array.from({ length: BENCH }, (_, i) => slotHtml(team, { slot: 100 + i }, true)).join('');
   const sum = (team) => Object.entries(T.asg).filter(([k]) => k.startsWith(team + ':')).map(([, pid]) => S.pmap[pid]?.rating || 0);
@@ -701,7 +719,7 @@ function balanceSplit(players) {
   const cnt = (t, pos) => t.filter((p) => p.position === pos).length;
   const W = { GK: 20, DEF: 4, MID: 3, FWD: 4 }; // how much an uneven split of each position hurts
   const cost = (A, B) => {
-    let c = Math.abs(tot(A) - tot(B)) * 3 + Math.abs(A.length - B.length) * 50;
+    let c = Math.abs(tot(A) - tot(B)) * 1.5 + Math.abs(A.length - B.length) * 50;
     for (const pos of Object.keys(W)) {
       const a = cnt(A, pos), b = cnt(B, pos);
       c += W[pos] * (Math.abs(a - b) - ((a + b) % 2)); // odd numbers can't split evenly — don't punish that
@@ -808,36 +826,52 @@ async function viewFixtures() {
 }
 
 // ---------- stats ----------
-let statSort = { key: 'played', dir: -1 };
+let statSort = { key: 'pts', dir: -1 };
 async function viewStats() {
   const v = mount('stats');
-  const { players, total_played } = await api('GET', '/api/stats');
-  const rows = players.map((p) => ({ ...p, pct: p.played ? Math.round((p.won / p.played) * 100) : 0, pts: p.won * 3 + p.drawn, gd: p.gf - p.ga }));
+  const { players, total_played, rules: R } = await api('GET', '/api/stats');
+  const rows = players.map((p) => ({ ...p, pct: p.played ? Math.round((p.won / p.played) * 100) : 0, pts: p.points, gd: p.gf - p.ga }));
   // [key, label, numeric, hideOnPhone, cell]
   const cols = [
     ['name', 'Player', 0, 0, (r) => `<td class="name"><a class="plink" href="#/player/${r.id}">${esc(r.name)}</a></td>`],
     ['position', 'Pos', 0, 1, (r) => `<td class="hide-sm">${posBadge(r.position)}</td>`],
+    ['rating', 'Abl', 1, 0, (r) => `<td class="num"><b class="${ablCls(r.rating)}">${r.rating}</b></td>`],
     ['played', 'Apps', 1, 0, (r) => `<td class="num">${r.played}</td>`],
-    ['won', 'W', 1, 0, (r) => `<td class="num">${r.won}</td>`],
+    ['won', 'W', 1, 1, (r) => `<td class="num hide-sm">${r.won}</td>`],
     ['drawn', 'D', 1, 1, (r) => `<td class="num hide-sm">${r.drawn}</td>`],
-    ['lost', 'L', 1, 0, (r) => `<td class="num">${r.lost}</td>`],
+    ['lost', 'L', 1, 1, (r) => `<td class="num hide-sm">${r.lost}</td>`],
     ['goals', 'G', 1, 0, (r) => `<td class="num y">${r.goals}</td>`],
     ['assists', 'A', 1, 0, (r) => `<td class="num c">${r.assists}</td>`],
     ['motm', '★', 1, 0, (r) => `<td class="num m">${r.motm}</td>`],
     ['pct', 'Win %', 1, 1, (r) => `<td class="num hide-sm">${r.played ? r.pct + '%' : '–'}</td>`],
     ['gd', 'GD', 1, 1, (r) => `<td class="num hide-sm">${r.gd > 0 ? '+' : ''}${r.gd}</td>`],
-    ['pts', 'Pts', 1, 0, (r) => `<td class="num"><b>${r.pts}</b></td>`],
+    ['ppg', 'P/G', 1, 1, (r) => `<td class="num hide-sm">${r.played ? fmtPts(r.ppg) : '–'}</td>`],
+    ['pts', 'Pts', 1, 0, (r) => `<td class="num pts"><b>${fmtPts(r.pts)}</b></td>`],
     ['signed_in', 'Sign-ups', 1, 1, (r) => `<td class="num hide-sm">${r.signed_in}</td>`],
   ];
   const draw = () => {
     const { key, dir } = statSort;
     rows.sort((a, b) => (typeof a[key] === 'string' ? a[key].localeCompare(b[key]) : a[key] - b[key]) * dir || b.pts - a.pts || a.name.localeCompare(b.name));
-    v.innerHTML = `<div class="panel"><div class="panel-h">Player Stats<span class="spacer"></span><span class="sub">${total_played} matches played</span></div>
+    v.innerHTML = `<div class="panel"><div class="panel-h">League table<span class="spacer"></span><span class="sub">${total_played} matches played</span></div>
       <div class="table-wrap"><table class="fm stats"><thead><tr><th class="num">#</th>${cols.map(([k, l, n, h]) =>
         `<th class="sortable ${n ? 'num' : ''} ${h ? 'hide-sm' : ''} ${k === key ? 'sorted' : ''}" data-k="${k}">${l}${k === key ? (dir < 0 ? '▾' : '▴') : ''}</th>`).join('')}</tr></thead>
       <tbody>${rows.map((r, i) => `<tr class="${r.id === S.me.id ? 'sel' : ''}"><td class="num dim">${i + 1}</td>${cols.map((c) => c[4](r)).join('')}</tr>`).join('')}
       </tbody></table></div>
-      <div class="panel-b muted" style="font-size:18px">Apps, W/D/L and GD: played matches with a score, for everyone in the line-up (subs included). G/A: goals and assists recorded live. ★: man-of-the-match wins.</div></div>`;
+      </div>
+      <div class="panel"><div class="panel-h" style="background:var(--ma);color:#fff">How points work</div><div class="panel-b rules">
+        <div class="rgrid">
+          <span>Win</span><b class="g">+${R.win}</b><span>Draw</span><b class="y">+${R.draw}</b><span>Loss</span><b>${R.loss >= 0 ? '+' : ''}${R.loss}</b>
+          <span>Goal</span><b class="g">+${R.goal}</b><span>Assist</span><b class="g">+${R.assist}</b><span>Own goal</span><b class="r">${R.own_goal}</b>
+          <span>Man of the match</span><b class="m">+${R.motm}</b>
+        </div>
+        <div class="c" style="margin-top:8px">GOALKEEPER (whoever starts in goal)</div>
+        <div class="rgrid">
+          <span>Every ${R.gk_block_minutes} min without conceding</span><b class="g">+${R.gk_clean_block}</b>
+          <span>Every goal conceded</span><b class="r">${R.gk_conceded}</b>
+        </div>
+        <p class="dim" style="margin:8px 0 0;font-size:17px">Clean minutes are counted from ▶ Kick off to full time, only when goals were recorded live. Abl = ability (0–10). P/G = points per game. ★ = man-of-the-match wins.</p>
+        ${S.me.is_admin ? '<a class="btn sm" href="#/admin/settings" style="margin-top:8px">Change rules</a>' : ''}
+      </div></div>`;
     $$('th[data-k]', v).forEach((th) => (th.onclick = () => {
       statSort = { key: th.dataset.k, dir: statSort.key === th.dataset.k ? -statSort.dir : (th.dataset.k === 'name' || th.dataset.k === 'position' ? 1 : -1) }; draw();
     }));
@@ -886,7 +920,7 @@ function modal(title, bodyHtml, onMount) {
 }
 
 function playerForm(p, done) {
-  const isNew = !p; p = p || { name: '', phone: '', position: 'MID', rating: 3, is_admin: false, active: true };
+  const isNew = !p; p = p || { name: '', phone: '', position: 'MID', rating: 5, is_admin: false, active: true };
   const guest = !!p.is_guest;
   modal(isNew ? 'New player' : `Edit ${p.name}`, `
     <form id="pf">
@@ -894,7 +928,7 @@ function playerForm(p, done) {
         <label class="f"><span>Name</span><input type="text" name="name" value="${esc(p.name)}" required></label>
         <label class="f"><span>Phone (WhatsApp)</span><input type="tel" name="phone" value="${esc(guest ? '' : p.phone)}" ${guest ? '' : 'required'} placeholder="${guest ? 'add to make them a member' : '+381641234567'}"></label>
         <label class="f"><span>Position</span><select name="position">${['GK', 'DEF', 'MID', 'FWD'].map((x) => `<option ${x === p.position ? 'selected' : ''}>${x}</option>`).join('')}</select></label>
-        <label class="f"><span>Ability (1–5)</span><select name="rating">${[1, 2, 3, 4, 5].map((x) => `<option value="${x}" ${x === p.rating ? 'selected' : ''}>${'■'.repeat(x)}${'□'.repeat(5 - x)}</option>`).join('')}</select></label>
+        <label class="f"><span>Ability (0–10)</span><select name="rating">${ablOptions(p.rating)}</select></label>
       </div>
       <div ${guest ? 'hidden' : ''}>
       <label class="check"><input type="checkbox" name="is_admin" ${p.is_admin ? 'checked' : ''}> Admin (can create matches &amp; pick teams)</label>
@@ -928,7 +962,7 @@ function playerForm(p, done) {
 function bulkForm(done) {
   modal('Bulk add players', `
     <p class="muted" style="margin-top:0">One player per line: <b>Name, phone</b> — optionally <b>, position, ability</b>.<br>
-    e.g. <code>Marko Petrović, +381641234567, DEF, 4</code></p>
+    e.g. <code>Marko Petrović, +381641234567, DEF, 7</code> (ability 0–10)</p>
     <textarea id="bt" rows="10" placeholder="Marko Petrović, +381641234567&#10;Nikola, 0631234567, GK"></textarea>
     <div class="err" id="berr"></div>
     <div class="btn-row" style="justify-content:flex-end"><button class="btn ghost" data-close>Cancel</button><button class="btn primary" id="bgo">Add all</button></div>`,
@@ -938,7 +972,7 @@ function bulkForm(done) {
       let ok = 0; const errs = [];
       for (const line of lines) {
         const [name, phone, position, rating] = line.split(/[,;\t]/).map((s) => s.trim());
-        try { await api('POST', '/api/players', { name, phone, position: position || 'MID', rating: Number(rating) || 3 }); ok++; }
+        try { await api('POST', '/api/players', { name, phone, position: position || 'MID', rating: rating !== undefined && rating !== '' && !isNaN(rating) ? Number(rating) : 5 }); ok++; }
         catch (e) { errs.push(`${name || line}: ${e.message}`); }
       }
       toast(`Added ${ok} player${ok === 1 ? '' : 's'}`);
@@ -1026,6 +1060,11 @@ function adminSettings(el) {
     <p class="muted" style="margin-top:0">Everyone uses this password together with their own phone number. Changing it doesn't log out people who are already signed in.</p>
     <form id="sf" class="btn-row"><input type="text" name="password" placeholder="New group password" style="max-width:260px" required minlength="4"><button class="btn primary">Change</button></form>
   </div></div>
+  <div class="panel"><div class="panel-h">Point rules</div><div class="panel-b">
+    <p class="muted" style="margin-top:0">Used for the league table. Changing them recalculates every past match too.</p>
+    <form id="prf"><div class="form-grid" id="prfields"><span class="dim">Loading…</span></div>
+      <div class="btn-row"><button class="btn primary">Save rules</button><button type="button" class="btn ghost" id="prreset">Reset to defaults</button></div></form>
+  </div></div>
   <div class="panel"><div class="panel-h">Backup</div><div class="panel-b">
     <p class="muted" style="margin-top:0">Download a copy of everything (players, matches, goals, votes). Keep it somewhere safe — once a month is plenty.</p>
     <a class="btn primary" href="/api/backup" download>Download backup</a>
@@ -1041,6 +1080,17 @@ function adminSettings(el) {
   $('#sf').onsubmit = async (e) => {
     e.preventDefault();
     try { await api('PUT', '/api/settings/password', { password: e.target.password.value }); e.target.reset(); toast('Group password changed'); } catch (err) { fail(err); }
+  };
+  const LABELS = { win: 'Win', draw: 'Draw', loss: 'Loss', goal: 'Goal', assist: 'Assist', own_goal: 'Own goal', motm: 'Man of the match',
+    gk_clean_block: 'GK: clean block', gk_block_minutes: 'GK: block length (min)', gk_conceded: 'GK: per goal conceded', match_minutes: 'Match length if no full time (min)' };
+  api('GET', '/api/settings/points').then(({ rules, defaults }) => {
+    $('#prfields').innerHTML = Object.keys(defaults).map((k) => `<label class="f"><span>${LABELS[k] || k}</span>
+      <input type="number" step="${/minutes/.test(k) ? 1 : 0.05}" name="${k}" value="${rules[k]}"></label>`).join('');
+    $('#prreset').onclick = () => { for (const k of Object.keys(defaults)) $('#prf')[k].value = defaults[k]; };
+  }).catch(fail);
+  $('#prf').onsubmit = async (e) => {
+    e.preventDefault();
+    try { await api('PUT', '/api/settings/points', Object.fromEntries(new FormData(e.target))); toast('Point rules saved'); } catch (err) { fail(err); }
   };
   $('#cp').onclick = () => navigator.clipboard?.writeText(location.origin).then(() => toast('Copied'), () => {});
 }

@@ -314,3 +314,19 @@ table.fm tbody tr.placed .st { text-decoration: line-through; }
   .slot .pa, .slot .pa .pos { font-size: 12px; }
   .slot .pa .bar { font-size: 9px; }
 }
+
+/* ---------- ability 0-10 ---------- */
+.abl { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.abl b { font-weight: normal; min-width: 18px; text-align: right; }
+.abl .stars { font-size: 11px; letter-spacing: -1px; color: var(--ye); }
+.abl .stars .off { color: #224; }
+.slot .pa .an { font-size: 15px; }
+@media (max-width: 520px) { .slot .pa .an { font-size: 12px; } .abl .stars { font-size: 8px; } }
+/* ---------- points ---------- */
+table.fm td.pts b { font-weight: normal; color: var(--ye); }
+.rules .rgrid { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr auto; gap: 2px 10px; align-items: baseline; }
+.rules .rgrid b { font-weight: normal; text-align: right; }
+@media (max-width: 520px) { .rules .rgrid { grid-template-columns: 1fr auto; } }
+.mpts { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 2px 12px; }
+.mpts a { display: flex; align-items: center; gap: 4px; }
+.mpts a b { margin-left: auto; font-weight: normal; }

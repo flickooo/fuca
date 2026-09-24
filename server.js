@@ -115,6 +115,12 @@ const setSetting = (k, v) =>
   db.prepare('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(k, v);
 
 // ---------- bootstrap ----------
+// Ability scale moved from 1-5 to 0-10: double existing ratings once.
+if (getSetting('rating_scale') !== '10') {
+  const n = db.prepare('UPDATE players SET rating = MIN(10, rating * 2)').run().changes;
+  setSetting('rating_scale', '10');
+  if (n) console.log(`[setup] Converted ${n} abilities to the 0-10 scale`);
+}
 // Env values are cleaned (Railway/Docker users often paste quotes or trailing spaces).
 const envVal = (k) => {
   const v = process.env[k];
@@ -146,7 +152,7 @@ const sha = (s) => crypto.createHash('sha256').update(s).digest('hex');
   if (phone.length >= 8) {
     const ex = db.prepare('SELECT * FROM players').all().find((p) => phoneKey(p.phone) === phoneKey(phone));
     if (!ex) {
-      db.prepare('INSERT INTO players(name, phone, is_admin) VALUES(?,?,1)').run(name, phone);
+      db.prepare('INSERT INTO players(name, phone, is_admin, rating) VALUES(?,?,1,5)').run(name, phone);
       console.log(`[setup] Created admin ${name} (${phone})`);
     } else if (!ex.is_admin || !ex.active) {
       db.prepare('UPDATE players SET is_admin=1, active=1 WHERE id=?').run(ex.id);
@@ -280,7 +286,7 @@ const matchDetail = (id, user) => {
   const goals = db.prepare('SELECT id, team, scorer_id, assist_id, own_goal, created_by, created_at FROM goals WHERE match_id=? ORDER BY id').all(id)
     .map((g) => ({ ...g, own_goal: !!g.own_goal }));
   return { ...m, lineup_published: !!m.lineup_published, capacity: cap, attendance, lineup, goals,
-    motm: motmInfo(m, user), my_status: mine ? mine.status : null };
+    motm: motmInfo(m, user), points: matchPoints(m), my_status: mine ? mine.status : null };
 };
 
 const requireAdmin = (u) => { if (!u.is_admin) throw new HttpError(403, 'Admins only'); };
@@ -339,7 +345,7 @@ const playerFields = (b, existing = {}) => {
   if (phone.length < 8) bad('Phone number looks too short');
   const position = String(b.position ?? existing.position ?? 'MID').toUpperCase();
   if (!POSITIONS.includes(position)) bad('Position must be GK, DEF, MID or FWD');
-  const rating = int(b.rating ?? existing.rating ?? 3, 'Rating', 1, 5);
+  const rating = int(b.rating ?? existing.rating ?? 5, 'Ability', 0, 10);
   const is_admin = (b.is_admin ?? !!existing.is_admin) ? 1 : 0;
   const active = (b.active ?? (existing.active ?? 1)) ? 1 : 0;
   const pin = b.pin == null ? '' : String(b.pin).trim();
@@ -367,7 +373,7 @@ route('PUT', '/api/players/:id', (req, res, { user, body, params }) => {
     // editing a guest without giving a number: keep them a guest
     const name = String(body.name ?? ex.name).trim() || ex.name;
     const position = POSITIONS.includes(String(body.position || '').toUpperCase()) ? String(body.position).toUpperCase() : ex.position;
-    const rating = body.rating != null ? int(body.rating, 'Rating', 1, 5) : ex.rating;
+    const rating = body.rating != null ? int(body.rating, 'Ability', 0, 10) : ex.rating;
     db.prepare('UPDATE players SET name=?, position=?, rating=? WHERE id=?').run(name, position, rating, ex.id);
     return send(res, 200, { ok: true });
   }
@@ -606,7 +612,7 @@ route('POST', '/api/matches/:id/guests', (req, res, { user, body, params }) => {
     const name = String(body.name || '').trim().slice(0, 40);
     if (!name) bad('Give the guest a name');
     const position = POSITIONS.includes(String(body.position || '').toUpperCase()) ? String(body.position).toUpperCase() : 'MID';
-    const rating = body.rating != null && body.rating !== '' ? int(body.rating, 'Rating', 1, 5) : 3;
+    const rating = body.rating != null && body.rating !== '' ? int(body.rating, 'Ability', 0, 10) : 5;
     const existing = db.prepare('SELECT id FROM players WHERE is_guest=1 AND name=? COLLATE NOCASE').get(name);
     gid = existing ? existing.id : Number(db.prepare('INSERT INTO players(name, phone, position, rating, is_guest) VALUES(?,?,?,?,1)')
       .run(name, guestPhone(), position, rating).lastInsertRowid);
@@ -631,21 +637,23 @@ route('DELETE', '/api/matches/:id/guests/:pid', (req, res, { user, params }) => 
 route('GET', '/api/players/:id/profile', (req, res, { user, params }) => {
   const p = db.prepare('SELECT * FROM players WHERE id=?').get(Number(params.id));
   if (!p) throw new HttpError(404, 'Player not found');
-  const games = db.prepare(`SELECT m.id, m.starts_at, m.team_a_name, m.team_b_name, m.score_a, m.score_b, m.status, m.ended_at, l.team, l.slot
+  const games = db.prepare(`SELECT m.id, m.starts_at, m.team_a_name, m.team_b_name, m.score_a, m.score_b, m.status, m.ended_at, m.kicked_off_at, l.team, l.slot
     FROM lineups l JOIN matches m ON m.id=l.match_id
     WHERE l.player_id=? AND m.status='played' AND m.score_a IS NOT NULL AND m.score_b IS NOT NULL
     ORDER BY m.starts_at DESC`).all(p.id);
   const goalsBy = Object.fromEntries(db.prepare(`SELECT match_id, COUNT(*) AS n FROM goals WHERE scorer_id=? AND own_goal=0 GROUP BY match_id`).all(p.id).map((r) => [r.match_id, r.n]));
   const assistsBy = Object.fromEntries(db.prepare(`SELECT match_id, COUNT(*) AS n FROM goals WHERE assist_id=? GROUP BY match_id`).all(p.id).map((r) => [r.match_id, r.n]));
   const ogBy = Object.fromEntries(db.prepare(`SELECT match_id, COUNT(*) AS n FROM goals WHERE scorer_id=? AND own_goal=1 GROUP BY match_id`).all(p.id).map((r) => [r.match_id, r.n]));
+  const R = pointRules();
   const list = games.map((g) => {
+    const mp = matchPoints(g, R)[p.id] || { pts: 0 };
     const mine = g.team === 'A' ? g.score_a : g.score_b, theirs = g.team === 'A' ? g.score_b : g.score_a;
     const c = voteClosesAt(g);
     const motm = c && new Date() >= new Date(c) && motmWinners(g.id).includes(p.id);
     return { match_id: g.id, starts_at: g.starts_at, team: g.team, team_name: g.team === 'A' ? g.team_a_name : g.team_b_name,
       opp_name: g.team === 'A' ? g.team_b_name : g.team_a_name, for: mine, against: theirs,
       result: mine > theirs ? 'W' : mine < theirs ? 'L' : 'D', sub: g.slot >= 100,
-      goals: goalsBy[g.id] || 0, assists: assistsBy[g.id] || 0, own_goals: ogBy[g.id] || 0, motm };
+      goals: goalsBy[g.id] || 0, assists: assistsBy[g.id] || 0, own_goals: ogBy[g.id] || 0, motm, pts: mp.pts, gk: !!mp.gk, blocks: mp.blocks || 0 };
   });
   const sum = (k) => list.reduce((a, g) => a + (typeof g[k] === 'boolean' ? (g[k] ? 1 : 0) : g[k]), 0);
   const count = (r) => list.filter((g) => g.result === r).length;
@@ -666,6 +674,7 @@ route('GET', '/api/players/:id/profile', (req, res, { user, params }) => {
     played: list.length, won: count('W'), drawn: count('D'), lost: count('L'), goals: sum('goals'), assists: sum('assists'),
     motm: sum('motm'), own_goals: sum('own_goals'), win_pct: list.length ? Math.round(count('W') / list.length * 100) : 0,
     signed_in: signups.ins || 0, signed_out: signups.outs || 0,
+    points: r2(list.reduce((x, g) => x + g.pts, 0)), ppg: list.length ? r2(list.reduce((x, g) => x + g.pts, 0) / list.length) : 0,
   }, games: list.slice(0, 30), best_mate: best });
 });
 
@@ -683,10 +692,79 @@ route('GET', '/api/backup', (req, res, { user }) => {
   } finally { fs.rmSync(tmp, { force: true }); }
 });
 
+// ---------- points system ----------
+const POINT_DEFAULTS = {
+  win: 2, draw: 1, loss: 0, goal: 0.5, assist: 0.25, own_goal: -0.25, motm: 1,
+  gk_clean_block: 0.25, gk_block_minutes: 5, gk_conceded: -0.25, match_minutes: 60,
+};
+const POINT_LIMITS = { gk_block_minutes: [1, 30], match_minutes: [10, 180] };
+const pointRules = () => {
+  let saved = {};
+  try { saved = JSON.parse(getSetting('point_rules') || '{}'); } catch {}
+  return { ...POINT_DEFAULTS, ...saved };
+};
+const r2 = (x) => Math.round(x * 100) / 100;
+
+// Points every player earned in one played match: { pid: { pts, gk, blocks, conceded } }
+const matchPoints = (m, R = pointRules()) => {
+  const out = {};
+  if (m.status !== 'played' || m.score_a == null || m.score_b == null) return out;
+  const lineup = db.prepare('SELECT player_id, team, slot FROM lineups WHERE match_id=?').all(m.id);
+  const goals = db.prepare('SELECT team, scorer_id, assist_id, own_goal, created_at FROM goals WHERE match_id=?').all(m.id);
+  const closes = voteClosesAt(m);
+  const motm = closes && new Date() >= new Date(closes) ? motmWinners(m.id) : [];
+  for (const l of lineup) {
+    const f = l.team === 'A' ? m.score_a : m.score_b, a = l.team === 'A' ? m.score_b : m.score_a;
+    let pts = f > a ? R.win : f < a ? R.loss : R.draw;
+    for (const g of goals) {
+      if (g.scorer_id === l.player_id) pts += g.own_goal ? R.own_goal : R.goal;
+      if (g.assist_id === l.player_id) pts += R.assist;
+    }
+    if (motm.includes(l.player_id)) pts += R.motm;
+    const row = { pts, gk: false, blocks: 0, conceded: 0 };
+    if (l.slot === 0) {
+      // goalkeeper: penalty per goal conceded, bonus for every full clean block of minutes
+      row.gk = true; row.conceded = a;
+      pts += a * R.gk_conceded;
+      const against = goals.filter((g) => g.team !== l.team);
+      if (m.kicked_off_at && against.length === a) {          // only when the goals were recorded live
+        const start = Date.parse(m.kicked_off_at);
+        const endRaw = m.ended_at ? Date.parse(m.ended_at) : NaN;
+        const end = endRaw > start && endRaw - start <= 150 * 60e3 ? endRaw : start + R.match_minutes * 60e3;
+        const block = R.gk_block_minutes * 60e3;
+        let prev = start, blocks = 0;
+        for (const t of against.map((g) => Date.parse(g.created_at)).sort((x, y) => x - y)) {
+          const tt = Math.min(Math.max(t, start), end);
+          blocks += Math.floor((tt - prev) / block); prev = tt;
+        }
+        blocks += Math.floor((end - prev) / block);
+        row.blocks = blocks; pts += blocks * R.gk_clean_block;
+      }
+    }
+    row.pts = r2(pts);
+    out[l.player_id] = row;
+  }
+  return out;
+};
+
+route('GET', '/api/settings/points', (req, res) => send(res, 200, { rules: pointRules(), defaults: POINT_DEFAULTS }));
+route('PUT', '/api/settings/points', (req, res, { user, body }) => {
+  requireAdmin(user);
+  const rules = {};
+  for (const k of Object.keys(POINT_DEFAULTS)) {
+    const v = body[k] === '' || body[k] == null ? POINT_DEFAULTS[k] : Number(body[k]);
+    const [lo, hi] = POINT_LIMITS[k] || [-10, 10];
+    if (!Number.isFinite(v) || v < lo || v > hi) bad(`${k.replace(/_/g, ' ')} must be between ${lo} and ${hi}`);
+    rules[k] = POINT_LIMITS[k] ? Math.round(v) : r2(v);
+  }
+  setSetting('point_rules', JSON.stringify(rules));
+  send(res, 200, { rules });
+});
+
 // ---------- routes: stats ----------
 route('GET', '/api/stats', (req, res) => {
   const rows = db.prepare(`
-    SELECT p.id, p.name, p.position,
+    SELECT p.id, p.name, p.position, p.rating,
       COUNT(x.mid) AS played,
       SUM(CASE WHEN (x.team='A' AND x.sa>x.sb) OR (x.team='B' AND x.sb>x.sa) THEN 1 ELSE 0 END) AS won,
       SUM(CASE WHEN x.sa=x.sb THEN 1 ELSE 0 END) AS drawn,
@@ -706,15 +784,23 @@ route('GET', '/api/stats', (req, res) => {
     WHERE g.own_goal=0 AND m.status<>'cancelled' GROUP BY g.scorer_id`).all().map((r) => [r.id, r.n]));
   const aMap = Object.fromEntries(db.prepare(`SELECT g.assist_id AS id, COUNT(*) AS n FROM goals g JOIN matches m ON m.id=g.match_id
     WHERE g.assist_id IS NOT NULL AND m.status<>'cancelled' GROUP BY g.assist_id`).all().map((r) => [r.id, r.n]));
-  const mMap = {};
+  const mMap = {}, pMap = {};
+  const R = pointRules();
   for (const m of db.prepare(`SELECT * FROM matches WHERE status='played'`).all()) {
     const c = voteClosesAt(m);
     if (c && new Date() >= new Date(c)) for (const pid of motmWinners(m.id)) mMap[pid] = (mMap[pid] || 0) + 1;
+    for (const [pid, x] of Object.entries(matchPoints(m, R))) {
+      const t = pMap[pid] || (pMap[pid] = { pts: 0, gk_games: 0, conceded: 0, blocks: 0 });
+      t.pts += x.pts; if (x.gk) { t.gk_games++; t.conceded += x.conceded; t.blocks += x.blocks; }
+    }
   }
   send(res, 200, {
     total_played: total,
     players: rows.map((r) => ({ ...r, won: r.won || 0, drawn: r.drawn || 0, lost: r.lost || 0, gf: r.gf || 0, ga: r.ga || 0,
-      signed_in: sMap[r.id]?.ins || 0, signed_out: sMap[r.id]?.outs || 0, goals: gMap[r.id] || 0, assists: aMap[r.id] || 0, motm: mMap[r.id] || 0 })),
+      signed_in: sMap[r.id]?.ins || 0, signed_out: sMap[r.id]?.outs || 0, goals: gMap[r.id] || 0, assists: aMap[r.id] || 0, motm: mMap[r.id] || 0,
+      rating: r.rating, points: r2(pMap[r.id]?.pts || 0), ppg: r.played ? r2((pMap[r.id]?.pts || 0) / r.played) : 0,
+      gk_games: pMap[r.id]?.gk_games || 0, conceded: pMap[r.id]?.conceded || 0, clean_blocks: pMap[r.id]?.blocks || 0 })),
+    rules: R,
   });
 });
 
