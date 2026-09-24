@@ -98,6 +98,7 @@ addCol('matches', 'kicked_off_at', 'TEXT');
 addCol('matches', 'ended_at', 'TEXT');
 addCol('players', 'pin_hash', 'TEXT');
 addCol('news', 'match_id', 'INTEGER');
+addCol('matches', 'clock_started', 'INTEGER NOT NULL DEFAULT 0');
 addCol('players', 'is_guest', 'INTEGER NOT NULL DEFAULT 0');
 addCol('sessions', 'elevated', 'INTEGER NOT NULL DEFAULT 0');
 addCol('attendance', 'invited_by', 'INTEGER');
@@ -538,13 +539,22 @@ const liveMatch = (id) => {
   return m;
 };
 
-route('POST', '/api/matches/:id/kickoff', (req, res, { user, params }) => {
+// Kick off = the official start of the clock (keepers' clean minutes count from here).
+// body: {} = now, { minutes_ago: n } or { at: ISO } when someone forgot to press it.
+route('POST', '/api/matches/:id/kickoff', (req, res, { user, body, params }) => {
   const m = liveMatch(Number(params.id));
   if (!m.lineup_published) bad('Teams are not published yet');
-  if (!m.kicked_off_at) {
-    db.prepare('UPDATE matches SET kicked_off_at=? WHERE id=?').run(new Date().toISOString(), m.id);
-    if (m.score_a == null) db.prepare('UPDATE matches SET score_a=0, score_b=0 WHERE id=?').run(m.id);
-  }
+  if (m.status === 'played' && !user.is_admin) bad('Only an admin can change the kick-off of a finished match');
+  if (m.clock_started && !user.is_admin && !body.fix) bad('The clock is already running');
+  let t = Date.now();
+  if (body.minutes_ago != null) t -= int(body.minutes_ago, 'Minutes', 0, 180) * 60e3;
+  else if (body.at) { t = Date.parse(body.at); if (!Number.isFinite(t)) bad('Bad time'); }
+  if (t > Date.now() + 60e3) bad('Kick-off can\'t be in the future');
+  const first = db.prepare('SELECT MIN(created_at) AS t FROM goals WHERE match_id=?').get(m.id).t;
+  if (first && t > Date.parse(first)) bad('Kick-off must be before the first goal — pick an earlier time');
+  if (m.ended_at && t > Date.parse(m.ended_at)) bad('Kick-off must be before full time');
+  db.prepare('UPDATE matches SET kicked_off_at=?, clock_started=1 WHERE id=?').run(new Date(t).toISOString(), m.id);
+  if (m.score_a == null) db.prepare('UPDATE matches SET score_a=0, score_b=0 WHERE id=?').run(m.id);
   send(res, 200, { match: matchDetail(m.id, user) });
 });
 
@@ -744,13 +754,15 @@ const matchPoints = (m, R = pointRules()) => {
       if (g.assist_id === l.player_id) pts += R.assist;
     }
     if (motm.includes(l.player_id)) pts += R.motm;
-    const row = { pts, gk: false, blocks: 0, conceded: 0 };
+    const row = { pts, gk: false, blocks: 0, conceded: 0, timed: false, live_goals: true };
     if (l.slot === 0) {
       // goalkeeper: penalty per goal conceded, bonus for every full clean block of minutes
       row.gk = true; row.conceded = a;
       pts += a * R.gk_conceded;
       const against = goals.filter((g) => g.team !== l.team);
-      if (m.kicked_off_at && against.length === a) {          // only when the goals were recorded live
+      row.timed = !!(m.clock_started && m.kicked_off_at);
+      row.live_goals = against.length === a;
+      if (row.timed && against.length === a) {          // only when ▶ Kick off was used and goals were recorded live
         const start = Date.parse(m.kicked_off_at);
         const endRaw = m.ended_at ? Date.parse(m.ended_at) : NaN;
         const end = endRaw > start && endRaw - start <= 150 * 60e3 ? endRaw : start + R.match_minutes * 60e3;

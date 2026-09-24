@@ -290,7 +290,14 @@ function pointsHtml(m) {
     const team = m.lineup.find((l) => l.player_id === Number(pid))?.team;
     return `<a class="plink" href="#/player/${pid}"><span class="chip-team ${team}"></span> ${esc(shortName(S.pmap[pid].name).toUpperCase())}${x.gk ? ' 🧤' : ''}
       <b class="${x.pts >= 0 ? 'y' : 'r'}">${x.pts > 0 ? '+' : ''}${fmtPts(x.pts)}</b></a>`;
-  }).join('')}</div>`;
+  }).join('')}</div>${gkBreakdown(m)}`;
+}
+function gkBreakdown(m) {
+  const keepers = Object.entries(m.points || {}).filter(([pid, x]) => x.gk && S.pmap[pid]);
+  if (!keepers.length) return '';
+  return `<div class="gkb">${keepers.map(([pid, x]) => `<div>🧤 <b>${esc(shortName(S.pmap[pid].name).toUpperCase())}</b>: ${x.conceded} conceded ·
+    ${x.timed ? (x.live_goals ? `<span class="g">${x.blocks} clean block${x.blocks === 1 ? '' : 's'}</span>` : '<span class="r">goals not recorded live — no clean blocks</span>')
+      : `<span class="r">clock not started — no clean blocks</span>${S.me.is_admin ? ` <a class="c" href="#/live/${m.id}">[set kick-off]</a>` : ''}`}</div>`).join('')}</div>`;
 }
 
 // ---------- goals / motm helpers ----------
@@ -348,7 +355,7 @@ async function viewLive(id) {
   let busy = false;
 
   const minute = (iso) => {
-    if (!m.kicked_off_at) return '';
+    if (!m.kicked_off_at || !m.clock_started) return '';
     const d = Math.floor((new Date(iso) - new Date(m.kicked_off_at)) / 60000) + 1;
     return d > 0 && d < 200 ? d + "'" : '';
   };
@@ -385,10 +392,13 @@ async function viewLive(id) {
 
     v.innerHTML = `
     <div class="live">
-      <div class="panel-h" style="background:${ended ? 'var(--gr)' : 'var(--re)'};color:${ended ? '#000' : '#fff'}">${ended ? 'Full time' : m.kicked_off_at ? '<span class="flash">●</span> Live' : 'Ready'}
+      <div class="panel-h" style="background:${ended ? 'var(--gr)' : 'var(--re)'};color:${ended ? '#000' : '#fff'}">${ended ? 'Full time' : m.clock_started ? '<span class="flash">●</span> Live' : 'Ready'}
         <span class="spacer"></span><span class="sub">${fmtShort(m.starts_at)}</span></div>
       <div class="sb"><div class="t ta">${esc(m.team_a_name)}</div><div class="s">${m.score_a ?? 0}-${m.score_b ?? 0}</div><div class="t tb">${esc(m.team_b_name)}</div></div>
-      <div class="clk">${ended ? 'FULL TIME' : elapsed != null ? `${elapsed}' · tap the scorer` : '<button class="btn primary" id="ko">▶ Kick off</button> <span class="dim">starts the clock (keepers earn clean-minute points)</span>'}</div>
+      ${!m.clock_started && (!ended || S.me.is_admin) ? `<div class="kobox">
+        <button class="btn primary ko-btn ${ended ? '' : 'flash-bg'}" id="ko">▶ ${m.goals.length || ended ? 'Set kick-off time' : 'Kick off'}</button>
+        <div class="dim">${m.goals.length || ended ? 'The clock wasn\'t started — goalkeepers only earn clean-minute points once you set when the game began.' : 'Press when the game starts. It runs the match clock and the goalkeepers\' clean-minute points.'}</div></div>` : ''}
+      <div class="clk">${ended ? 'FULL TIME' : m.clock_started ? `${elapsed}' · tap the scorer` : 'Tap a scorer to record a goal'}</div>
       <div class="cols">${col('A')}${col('B')}</div>
       ${m.goals.length ? `<div class="panel-h" style="margin-top:12px">Goals<span class="spacer"></span><span class="sub">tap to fix assist · ✕ to undo</span></div><div class="feed">${feed}</div>` : ''}
       <div class="btn-row" style="margin-top:14px;justify-content:space-between">
@@ -427,7 +437,24 @@ async function viewLive(id) {
     const cancel = $('#cancel', v); if (cancel) cancel.onclick = () => { sheet = null; draw(); };
     const bg = $('.sheet-bg', v); if (bg) bg.onclick = () => { sheet = null; draw(); };
     const ko = $('#ko', v);
-    if (ko) ko.onclick = async () => { try { m = (await api('POST', `/api/matches/${m.id}/kickoff`)).match; toast('Kick off!'); draw(); } catch (err) { fail(err); } };
+    if (ko) ko.onclick = () => {
+      const late = m.goals.length || m.status === 'played';
+      const go = async (body) => { try { m = (await api('POST', `/api/matches/${m.id}/kickoff`, body)).match; toast('Clock started'); draw(); return true; } catch (err) { fail(err); return false; } };
+      if (!late) return go({});
+      const d = dt(m.starts_at), p2 = (n) => String(n).padStart(2, '0');
+      const firstGoal = m.goals.length ? Math.min(...m.goals.map((g) => Date.parse(g.created_at))) : null;
+      modal('When did the game start?', `
+        ${m.status === 'played' ? '' : `<div class="grid2b">${[0, 5, 10, 15, 20, 30, 45, 60].filter((x) => !firstGoal || Date.now() - x * 60e3 <= firstGoal)
+          .map((x) => `<button class="btn" data-ago="${x}">${x ? x + ' min ago' : 'Just now'}</button>`).join('')}</div>
+        <div class="c" style="margin:12px 0 4px">OR EXACT TIME</div>`}
+        <form id="kof" class="btn-row"><input type="date" name="d" value="${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}" style="max-width:170px">
+          <input type="time" name="t" value="${p2(d.getHours())}:${p2(d.getMinutes())}" style="max-width:120px" required><button class="btn primary">Set</button></form>
+        <p class="dim" style="font-size:17px">${firstGoal ? `First goal was recorded at <span class="y">${fmtTime(new Date(firstGoal).toISOString())}</span> — kick-off must be before that.` : ''}</p>`, (root, close) => {
+        $$('[data-ago]', root).forEach((b) => (b.onclick = async () => { if (await go({ minutes_ago: Number(b.dataset.ago), fix: true })) close(); }));
+        $('#kof', root).onsubmit = async (e) => { e.preventDefault(); const f = e.target;
+          if (await go({ at: new Date(`${f.d.value}T${f.t.value}`).toISOString(), fix: true })) close(); };
+      });
+    };
     const ft = $('#ft', v);
     if (ft) ft.onclick = async () => {
       if (!confirm(`End the match at ${m.score_a ?? 0}-${m.score_b ?? 0}? Man-of-the-match voting opens.`)) return;

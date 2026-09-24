@@ -357,3 +357,13 @@ table.fm td.pts b { font-weight: normal; color: var(--ye); }
   .titleband .dh { font-size: 34px; }
   .titleband .who { flex: 1 1 100%; text-align: right; font-size: 18px; padding-bottom: 2px; }
 }
+
+/* ---------- kick-off ---------- */
+.kobox { text-align: center; margin: 6px 0 4px; }
+.kobox .ko-btn { font-size: 30px; min-height: 54px; width: 100%; max-width: 420px; }
+.kobox .dim { font-size: 17px; margin-top: 4px; }
+.flash-bg { animation: flashbg 1s steps(1) infinite; }
+@keyframes flashbg { 50% { background: var(--gr); } }
+.grid2b { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.gkb { margin-top: 8px; font-size: 19px; }
+.gkb b { font-weight: normal; }
