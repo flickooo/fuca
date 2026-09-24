@@ -669,7 +669,7 @@ route('DELETE', '/api/matches/:id/guests/:pid', (req, res, { user, params }) => 
 route('GET', '/api/players/:id/profile', (req, res, { user, params }) => {
   const p = db.prepare('SELECT * FROM players WHERE id=?').get(Number(params.id));
   if (!p) throw new HttpError(404, 'Player not found');
-  const games = db.prepare(`SELECT m.id, m.starts_at, m.team_a_name, m.team_b_name, m.score_a, m.score_b, m.status, m.ended_at, m.kicked_off_at, l.team, l.slot
+  const games = db.prepare(`SELECT m.*, l.team, l.slot
     FROM lineups l JOIN matches m ON m.id=l.match_id
     WHERE l.player_id=? AND m.status='played' AND m.score_a IS NOT NULL AND m.score_b IS NOT NULL
     ORDER BY m.starts_at DESC`).all(p.id);
