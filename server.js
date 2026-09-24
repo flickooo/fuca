@@ -102,6 +102,10 @@ addCol('players', 'pin_hash', 'TEXT');
 addCol('news', 'match_id', 'INTEGER');
 addCol('matches', 'clock_started', 'INTEGER NOT NULL DEFAULT 0');
 addCol('news', 'ukey', 'TEXT');
+addCol('players', 'last_login_at', 'TEXT');
+addCol('players', 'last_seen_at', 'TEXT');
+addCol('sessions', 'last_seen_at', 'TEXT');
+addCol('sessions', 'user_agent', 'TEXT');
 db.exec(`CREATE TABLE IF NOT EXISTS predictions (
   match_id INTEGER NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
   player_id INTEGER NOT NULL REFERENCES players(id) ON DELETE CASCADE,
@@ -243,6 +247,11 @@ const currentUserByToken = (token) => {
   // An admin with a PIN only gets admin rights in a session that was opened with that PIN.
   u.admin_account = !!u.is_admin;
   u.is_admin = u.is_admin && (!u.pin_hash || u.elevated) ? 1 : 0;
+  const nowIso = new Date().toISOString();
+  if (!u.last_seen_at || Date.now() - Date.parse(u.last_seen_at) > 5 * 60e3) {
+    db.prepare('UPDATE players SET last_seen_at=? WHERE id=?').run(nowIso, u.id);
+    db.prepare('UPDATE sessions SET last_seen_at=? WHERE token=?').run(nowIso, token);
+  }
   return u;
 };
 
@@ -333,7 +342,8 @@ const matchDetail = (id, user) => {
   const goals = db.prepare('SELECT id, team, scorer_id, assist_id, own_goal, created_by, created_at FROM goals WHERE match_id=? ORDER BY id').all(id)
     .map((g) => ({ ...g, own_goal: !!g.own_goal }));
   return { ...m, lineup_published: !!m.lineup_published, capacity: cap, attendance, lineup, goals,
-    motm: motmInfo(m, user), points: matchPoints(m), predictions: predInfo(m, user), my_status: mine ? mine.status : null };
+    motm: motmInfo(m, user), points: matchPoints(m), predictions: predInfo(m, user), my_status: mine ? mine.status : null,
+    ...(user.is_admin ? { late_drops: db.prepare('SELECT player_id, at FROM late_drops WHERE match_id=? ORDER BY at').all(id) } : {}) };
 };
 
 const requireAdmin = (u) => { if (!u.is_admin) throw new HttpError(403, 'Admins only'); };
@@ -363,7 +373,9 @@ route('POST', '/api/login', async (req, res, { body }) => {
     elevated = 1;
   }
   const token = crypto.randomBytes(32).toString('hex');
-  db.prepare('INSERT INTO sessions(token, player_id, elevated) VALUES(?,?,?)').run(token, player.id, elevated);
+  db.prepare('INSERT INTO sessions(token, player_id, elevated, user_agent, last_seen_at) VALUES(?,?,?,?,?)')
+    .run(token, player.id, elevated, String(req.headers['user-agent'] || '').slice(0, 200), new Date().toISOString());
+  db.prepare('UPDATE players SET last_login_at=?, last_seen_at=? WHERE id=?').run(new Date().toISOString(), new Date().toISOString(), player.id);
   const u = currentUserByToken(token);
   const secure = req.headers['x-forwarded-proto'] === 'https' ? '; Secure' : '';
   send(res, 200, { user: meJson(u) }, {
@@ -1057,6 +1069,31 @@ const predictorTable = () => {
   }
   return Object.values(rows).sort((a, b) => b.pts - a.pts || b.exact - a.exact || a.n - b.n);
 };
+
+// ---------- routes: admin activity ----------
+const deviceOf = (ua = '') => /iphone/i.test(ua) ? 'iPhone' : /ipad/i.test(ua) ? 'iPad' : /android/i.test(ua) ? 'Android' : /mac os/i.test(ua) ? 'Mac' : /windows/i.test(ua) ? 'Windows' : /linux/i.test(ua) ? 'Linux' : '';
+route('GET', '/api/admin/activity', (req, res, { user }) => {
+  requireAdmin(user);
+  const sess = {};
+  for (const x of db.prepare('SELECT player_id, user_agent, last_seen_at, created_at FROM sessions').all()) (sess[x.player_id] ||= []).push(x);
+  const rows = db.prepare('SELECT id, name, active, is_admin, last_login_at, last_seen_at FROM players WHERE is_guest=0').all().map((p) => {
+    const ss = sess[p.id] || [];
+    const logins = ss.map((x) => x.created_at && x.created_at.replace(' ', 'T') + (x.created_at.endsWith('Z') ? '' : 'Z')).filter(Boolean).sort();
+    return { ...p, active: !!p.active, is_admin: !!p.is_admin,
+      // players logged in before tracking existed: fall back to their newest session
+      last_login_at: p.last_login_at || logins[logins.length - 1] || null,
+      devices: [...new Set(ss.map((x) => deviceOf(x.user_agent)).filter(Boolean))], sessions: ss.length };
+  });
+  send(res, 200, { players: rows });
+});
+route('GET', '/api/settings/app', (req, res) => send(res, 200, { country_code: getSetting('country_code') || '381' }));
+route('PUT', '/api/settings/app', (req, res, { user, body }) => {
+  requireAdmin(user);
+  const cc = String(body.country_code || '').replace(/\D/g, '');
+  if (!/^\d{1,4}$/.test(cc)) bad('Country code must be 1–4 digits, e.g. 381');
+  setSetting('country_code', cc);
+  send(res, 200, { country_code: cc });
+});
 
 // ---------- routes: stats ----------
 route('GET', '/api/stats', (req, res) => {

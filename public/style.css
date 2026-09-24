@@ -404,3 +404,12 @@ table.fm td.pts b { font-weight: normal; color: var(--ye); }
 .h2h { margin-top: 8px; padding: 6px 8px; box-shadow: inset 0 0 0 2px var(--bl); }
 .h2h > div { padding: 2px 0; }
 .h2h b { font-weight: normal; }
+
+/* ---------- WhatsApp alerts ---------- */
+.alerts .alert { padding: 6px 8px 8px; margin-bottom: 8px; box-shadow: inset 0 0 0 2px #333; }
+.alerts .alert.new { box-shadow: inset 0 0 0 2px var(--gr); }
+.alerts .alert .ah { display: flex; justify-content: space-between; gap: 8px; text-transform: uppercase; color: var(--ye); }
+.alerts .apre { white-space: pre-wrap; font-size: 17px; color: var(--wh); background: #0a0a2a; padding: 4px 6px; margin: 4px 0 6px; }
+.alerts .alert.sent .apre { color: var(--dim); }
+.nrow { display: flex; align-items: center; gap: 8px; padding: 4px 0; border-bottom: 1px dotted #223; }
+.nrow .nm { flex: 1; text-transform: uppercase; }

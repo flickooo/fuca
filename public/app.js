@@ -153,7 +153,7 @@ function renderLogin() {
       const { user } = await api('POST', '/api/login', { phone: f.phone.value, password: f.password.value, pin: f.pin.value });
       S.wantPin = false;
       try { localStorage.setItem('fm_phone', f.phone.value); } catch {}
-      S.me = user; route();
+      S.me = user; api('GET', '/api/settings/app').then((r) => (S.cc = r.country_code)).catch(() => {}); route();
     } catch (err) { $('#lerr').textContent = err.message; }
   };
 }
@@ -220,6 +220,7 @@ async function viewMatch(id) {
     const played = m.status === 'played' && m.score_a != null;
     const recent = (S.news || []).filter((n) => n.pinned || Date.now() - new Date(n.created_at) < 14 * 864e5).slice(0, 3);
     v.innerHTML = `
+    ${S.me.is_admin ? alertsHtml(m) : ''}
     ${recent.length ? `<div class="panel newsstrip"><div class="panel-h"><span>News</span>${S.newsUnread ? `<span class="nb flash">${S.newsUnread} NEW</span>` : ''}<span class="spacer"></span><a class="btn sm" href="#/news">All news ›</a></div>
       <div class="panel-b">${recent.map((n) => newsItem(n, false)).join('')}</div></div>` : ''}
     <div class="grid2">
@@ -290,6 +291,7 @@ async function viewMatch(id) {
     if (rp) rp.onclick = () => shareReport(m);
     const sh = $('#share', v);
     if (sh) sh.onclick = () => shareMatch(m);
+    if (S.me.is_admin) bindAlerts(v, m, () => render(m));
   };
   render(m);
 }
@@ -744,6 +746,95 @@ function relHtml(best, worst, nemesis, victim) {
   return lines.join('') || '<p class="dim" style="margin:0">Needs at least 3 games with or against someone — keep playing!</p>';
 }
 
+// ---------- WhatsApp alerts (admin) ----------
+// WhatsApp doesn't allow a website to post into a group by itself, so the app writes the message
+// and one tap opens WhatsApp with it ready to send.
+const waNum = (phone) => {
+  let d = String(phone || '').replace(/\D/g, '');
+  if (d.startsWith('00')) d = d.slice(2);
+  else if (d.startsWith('0')) d = (S.cc || '381') + d.slice(1);
+  return d;
+};
+const waOpen = (text, phone) => window.open(`https://wa.me/${phone ? waNum(phone) : ''}?text=${encodeURIComponent(text)}`, '_blank');
+const sentKey = (k) => `fm_sent_${k}`;
+const wasSent = (k) => { try { return !!localStorage.getItem(sentKey(k)); } catch { return false; } };
+const markSent = (k) => { try { localStorage.setItem(sentKey(k), '1'); } catch {} };
+const firstName = (n) => n.trim().split(/\s+/)[0];
+
+function matchAlerts(m) {
+  if (m.status !== 'upcoming') return [];
+  const url = `${location.origin}/#/match/${m.id}`;
+  const when = `${fmtShort(m.starts_at)} at ${fmtTime(m.starts_at)}`;
+  const ins = m.attendance.filter((a) => a.status === 'in' && !a.reserve);
+  const res = m.attendance.filter((a) => a.reserve);
+  const cap = m.capacity, free = cap - ins.length;
+  const hours = (Date.parse(m.starts_at) - Date.now()) / 3.6e6;
+  const out = [];
+  if (free <= 0) {
+    const need = Math.max(0, 2 - res.length);
+    out.push({ key: `${m.id}-full-${res.length}`, icon: '✅', title: `SQUAD FULL ${cap}/${cap}`, text:
+      `✅ *We're full for ${when}!* ${cap}/${cap} in.\n` + (need
+        ? `We need ${need} more as reserve${need > 1 ? 's' : ''} in case someone drops out — sign up here 👉 ${url}`
+        : `Reserves: ${res.map((r) => pname(r.player_id)).join(', ')}. See you there! 👉 ${url}`) });
+  }
+  const drops = (m.late_drops || []).filter((d) => !m.attendance.some((a) => a.player_id === d.player_id && a.status === 'in'));
+  if (drops.length && free > 0) {
+    const names = drops.map((d) => pname(d.player_id)).join(', ');
+    out.push({ key: `${m.id}-drop-${drops.map((d) => d.player_id).join('.')}`, icon: '⚠️', title: `${names.toUpperCase()} DROPPED OUT`, text:
+      `⚠️ *${names} dropped out* — ${free} spot${free > 1 ? 's' : ''} open for ${when}!\nWho's in? 👉 ${url}` });
+  } else if (free > 0 && hours > 0 && hours < 48) {
+    out.push({ key: `${m.id}-free-${free}`, icon: '⏰', title: `${free} SPOT${free > 1 ? 'S' : ''} LEFT`, text:
+      `⏰ *${free} spot${free > 1 ? 's' : ''} left* for ${when} (${ins.length}/${cap} in).\nSign up here 👉 ${url}` });
+  }
+  return out;
+}
+function noReply(m) {
+  const replied = new Set(m.attendance.map((a) => a.player_id));
+  return S.players.filter((p) => p.active && !p.is_guest && !replied.has(p.id));
+}
+function alertsHtml(m) {
+  const alerts = matchAlerts(m);
+  const nr = m.status === 'upcoming' ? noReply(m) : [];
+  if (!alerts.length && !nr.length) return '';
+  return `<div class="panel alerts"><div class="panel-h" style="background:var(--gr);color:#000">📣 WhatsApp alerts<span class="spacer"></span><span class="sub">admins only</span></div><div class="panel-b">
+    ${alerts.map((x) => { const sent = wasSent(x.key); return `<div class="alert ${sent ? 'sent' : 'new'}">
+      <div class="ah"><span>${x.icon} ${esc(x.title)}</span>${sent ? '<span class="dim">✓ sent</span>' : '<span class="nb flash">NEW</span>'}</div>
+      <div class="apre">${esc(x.text)}</div>
+      <button class="btn sm ${sent ? 'ghost' : 'primary'}" data-alert="${esc(x.key)}">📣 ${sent ? 'Send again' : 'Send to group'}</button></div>`; }).join('')}
+    ${nr.length ? `<div class="alert"><div class="ah"><span>💬 ${nr.length} HAVEN'T REPLIED</span></div>
+      <div class="dim" style="font-size:17px">${nr.map((p) => esc(p.name)).join(', ')}</div>
+      <div class="btn-row" style="margin-top:6px"><button class="btn sm primary" id="nudge">💬 Message them one by one</button><button class="btn sm" id="nudgegroup">📋 Post list to group</button></div></div>` : ''}
+  </div></div>`;
+}
+function bindAlerts(root, m, rerender) {
+  const alerts = matchAlerts(m);
+  $$('[data-alert]', root).forEach((b) => (b.onclick = () => {
+    const x = alerts.find((q) => q.key === b.dataset.alert); if (!x) return;
+    waOpen(x.text); markSent(x.key); setTimeout(rerender, 300);
+  }));
+  const url = `${location.origin}/#/match/${m.id}`, when = `${fmtShort(m.starts_at)} at ${fmtTime(m.starts_at)}`;
+  const ins = m.attendance.filter((a) => a.status === 'in' && !a.reserve).length;
+  const ng = $('#nudgegroup', root);
+  if (ng) ng.onclick = () => waOpen(`📋 *Football ${when}* — ${ins}/${m.capacity} in.\nStill waiting for: ${noReply(m).map((p) => p.name).join(', ')}\nIn or out? 👉 ${url}`);
+  const nb = $('#nudge', root);
+  if (nb) nb.onclick = () => {
+    const list = noReply(m);
+    const draw = (rootM) => {
+      $('#nlist', rootM).innerHTML = list.map((p) => { const k = `${m.id}-dm-${p.id}`; const sent = wasSent(k); return `<div class="nrow">
+        <span class="nm">${esc(p.name)}</span>${p.phone && !String(p.phone).startsWith('guest:') ? `<button class="btn sm ${sent ? 'ghost' : 'primary'}" data-dm="${p.id}">${sent ? '✓ Sent' : '💬 Message'}</button>` : '<span class="dim">no number</span>'}</div>`; }).join('');
+      $$('[data-dm]', rootM).forEach((b) => (b.onclick = () => {
+        const p = S.pmap[b.dataset.dm];
+        waOpen(`Hey ${firstName(p.name)}! ⚽ Football ${when} — ${ins}/${m.capacity} in so far. Are you in? Tap IN or OUT here 👉 ${url}`, p.phone);
+        markSent(`${m.id}-dm-${p.id}`); draw(rootM);
+      }));
+    };
+    modal(`Message ${list.length} player${list.length === 1 ? '' : 's'}`, `
+      <p class="muted" style="margin-top:0">Each button opens a private WhatsApp chat with the message ready — just press send, then come back for the next one.</p>
+      <div id="nlist"></div>
+      <div class="btn-row" style="justify-content:flex-end;margin-top:10px"><button class="btn ghost" data-close>Done</button></div>`, (rootM) => draw(rootM));
+  };
+}
+
 function shareMatch(m) {
   const ins = m.attendance.filter((a) => a.status === 'in' && !a.reserve).length;
   const url = `${location.origin}/#/match/${m.id}`;
@@ -1103,12 +1194,48 @@ async function viewStats() {
 // ---------- admin ----------
 async function viewAdmin(sub, arg) {
   const v = mount('admin');
-  const subs = [['squad', 'Squad'], ['matches', 'Matches'], ['settings', 'Settings']];
+  const subs = [['squad', 'Squad'], ['matches', 'Matches'], ['activity', 'Activity'], ['settings', 'Settings']];
   v.innerHTML = `<div class="subtabs">${subs.map(([k, l]) => `<a class="btn sm ${k === sub ? 'active' : ''}" href="#/admin/${k}">${l}</a>`).join('')}</div><div id="adm"></div>`;
   const el = $('#adm');
   if (sub === 'squad') return adminSquad(el);
   if (sub === 'matches') return adminMatches(el, arg);
   if (sub === 'settings') return adminSettings(el);
+  if (sub === 'activity') return adminActivity(el);
+}
+
+const ago = (iso) => {
+  if (!iso) return null;
+  const s = Math.max(0, (Date.now() - Date.parse(iso)) / 1000);
+  if (s < 90) return 'just now';
+  if (s < 3600) return `${Math.round(s / 60)} min ago`;
+  if (s < 86400) return `${Math.round(s / 3600)}h ago`;
+  if (s < 86400 * 14) return `${Math.round(s / 86400)} day${Math.round(s / 86400) === 1 ? '' : 's'} ago`;
+  return fmtShort(iso);
+};
+async function adminActivity(el) {
+  await loadPlayers();
+  const { players } = await api('GET', '/api/admin/activity');
+  const list = players.filter((p) => p.active).sort((a, b) => (b.last_seen_at || '').localeCompare(a.last_seen_at || '') || a.name.localeCompare(b.name));
+  const age = (iso) => (iso ? (Date.now() - Date.parse(iso)) / 864e5 : Infinity);
+  const week = list.filter((p) => age(p.last_seen_at) < 7).length, never = list.filter((p) => !p.last_seen_at && !p.last_login_at);
+  const cls = (iso) => { const d = age(iso); return d === Infinity ? 'm' : d < 1 ? 'g' : d < 7 ? 'y' : 'r'; };
+  el.innerHTML = `
+  <div class="panel"><div class="panel-h">Activity<span class="spacer"></span><span class="sub">${week}/${list.length} active this week</span></div>
+    <div class="table-wrap"><table class="fm"><thead><tr><th>Player</th><th>Last seen</th><th class="hide-sm">Last login</th><th class="hide-sm">Device</th><th></th></tr></thead><tbody>
+    ${list.map((p) => `<tr><td class="name"><a class="plink" href="#/player/${p.id}">${esc(p.name)}</a>${p.is_admin ? ' <span class="tag admin">A</span>' : ''}
+        <div class="show-sm dim sub2">${p.last_login_at ? 'login ' + esc(ago(p.last_login_at)) : ''}${p.devices.length ? ' · ' + esc(p.devices.join(', ')) : ''}</div></td>
+      <td class="${cls(p.last_seen_at || p.last_login_at)}">${esc(ago(p.last_seen_at || p.last_login_at) || 'never')}</td>
+      <td class="hide-sm dim">${p.last_login_at ? `${fmtShort(p.last_login_at)} ${fmtTime(p.last_login_at)}` : '—'}</td>
+      <td class="hide-sm dim">${esc(p.devices.join(', ') || '—')}</td>
+      <td>${!p.last_seen_at && !p.last_login_at && S.pmap[p.id]?.phone ? `<button class="btn sm" data-invite="${p.id}">💬 Invite</button>` : ''}</td></tr>`).join('')}
+    </tbody></table></div>
+    <div class="panel-b muted" style="font-size:17px">"Last seen" updates whenever someone opens the app (at most every 5 minutes). Tracking started with this update, so older activity isn't shown.
+      ${never.length ? `<br><span class="m">${never.length} never logged in</span> — tap 💬 Invite to send them the link.` : ''}</div>
+  </div>`;
+  $$('[data-invite]', el).forEach((b) => (b.onclick = () => {
+    const p = S.pmap[b.dataset.invite];
+    waOpen(`Hey ${firstName(p.name)}! ⚽ We organise football on FUDBAL TEXT now — sign up for games, see teams and the table:\n${location.origin}\nLog in with your phone number and the group password.`, p.phone);
+  }));
 }
 
 async function adminSquad(el) {
@@ -1291,6 +1418,10 @@ function adminSettings(el) {
     <p class="muted" style="margin-top:0">Everyone uses this password together with their own phone number. Changing it doesn't log out people who are already signed in.</p>
     <form id="sf" class="btn-row"><input type="text" name="password" placeholder="New group password" style="max-width:260px" required minlength="4"><button class="btn primary">Change</button></form>
   </div></div>
+  <div class="panel"><div class="panel-h">WhatsApp</div><div class="panel-b">
+    <p class="muted" style="margin-top:0">Country code used when opening private chats for numbers saved without it (e.g. 064… → +381 64…).</p>
+    <form id="ccf" class="btn-row"><span class="y">+</span><input type="text" name="cc" inputmode="numeric" maxlength="4" style="max-width:90px" value="${esc(S.cc || '381')}"><button class="btn primary">Save</button></form>
+  </div></div>
   <div class="panel"><div class="panel-h">Point rules</div><div class="panel-b">
     <p class="muted" style="margin-top:0">Used for the league table. Changing them recalculates every past match too.</p>
     <form id="prf"><div class="form-grid" id="prfields"><span class="dim">Loading…</span></div>
@@ -1323,10 +1454,14 @@ function adminSettings(el) {
     e.preventDefault();
     try { await api('PUT', '/api/settings/points', Object.fromEntries(new FormData(e.target))); toast('Point rules saved'); } catch (err) { fail(err); }
   };
+  $('#ccf').onsubmit = async (e) => {
+    e.preventDefault();
+    try { const r = await api('PUT', '/api/settings/app', { country_code: e.target.cc.value }); S.cc = r.country_code; toast('Saved'); } catch (err) { fail(err); }
+  };
   $('#cp').onclick = () => navigator.clipboard?.writeText(location.origin).then(() => toast('Copied'), () => {});
 }
 
 // ---------- boot ----------
 (async () => {
-  try { const { user } = await api('GET', '/api/me'); S.me = user; route(); } catch { renderLogin(); }
+  try { const { user } = await api('GET', '/api/me'); S.me = user; api('GET', '/api/settings/app').then((r) => (S.cc = r.country_code)).catch(() => {}); route(); } catch { renderLogin(); }
 })();
