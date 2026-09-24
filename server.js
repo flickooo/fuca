@@ -78,6 +78,17 @@ CREATE TABLE IF NOT EXISTS motm_votes (
   PRIMARY KEY (match_id, voter_id)
 );
 `);
+db.exec(`CREATE TABLE IF NOT EXISTS news (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL DEFAULT 'post',          -- post | ability
+  title TEXT NOT NULL,
+  body TEXT NOT NULL DEFAULT '',
+  player_id INTEGER REFERENCES players(id) ON DELETE CASCADE,
+  old_val INTEGER, new_val INTEGER,
+  pinned INTEGER NOT NULL DEFAULT 0,
+  created_by INTEGER REFERENCES players(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);`);
 // column migrations for databases created by older versions
 const addCol = (table, col, def) => {
   if (!db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`);
@@ -86,6 +97,7 @@ addCol('attendance', 'paid', 'INTEGER NOT NULL DEFAULT 0');
 addCol('matches', 'kicked_off_at', 'TEXT');
 addCol('matches', 'ended_at', 'TEXT');
 addCol('players', 'pin_hash', 'TEXT');
+addCol('news', 'match_id', 'INTEGER');
 addCol('players', 'is_guest', 'INTEGER NOT NULL DEFAULT 0');
 addCol('sessions', 'elevated', 'INTEGER NOT NULL DEFAULT 0');
 addCol('attendance', 'invited_by', 'INTEGER');
@@ -375,6 +387,11 @@ route('PUT', '/api/players/:id', (req, res, { user, body, params }) => {
     const position = POSITIONS.includes(String(body.position || '').toUpperCase()) ? String(body.position).toUpperCase() : ex.position;
     const rating = body.rating != null ? int(body.rating, 'Ability', 0, 10) : ex.rating;
     db.prepare('UPDATE players SET name=?, position=?, rating=? WHERE id=?').run(name, position, rating, ex.id);
+  if (ex.rating !== rating && body.announce) {
+    const up = rating > ex.rating;
+    db.prepare('INSERT INTO news(kind, title, body, player_id, old_val, new_val, created_by) VALUES(?,?,?,?,?,?,?)')
+      .run('ability', `${up ? 'ABILITY UP' : 'ABILITY DOWN'}: ${name.toUpperCase()}`, String(body.note || '').trim().slice(0, 300), ex.id, ex.rating, rating, user.id);
+  }
     return send(res, 200, { ok: true });
   }
   const f = playerFields(body, wasGuest ? { ...ex, phone: '' } : ex);
@@ -387,6 +404,11 @@ route('PUT', '/api/players/:id', (req, res, { user, body, params }) => {
     if (ex.id !== user.id) db.prepare('DELETE FROM sessions WHERE player_id=?').run(ex.id);
   }
   if (!f.active) db.prepare('DELETE FROM sessions WHERE player_id=?').run(ex.id);
+  if (ex.rating !== f.rating && body.announce) {
+    const up = f.rating > ex.rating;
+    db.prepare('INSERT INTO news(kind, title, body, player_id, old_val, new_val, created_by) VALUES(?,?,?,?,?,?,?)')
+      .run('ability', `${up ? 'ABILITY UP' : 'ABILITY DOWN'}: ${f.name.toUpperCase()}`, String(body.note || '').trim().slice(0, 300), ex.id, ex.rating, f.rating, user.id);
+  }
   send(res, 200, { ok: true });
 });
 
@@ -670,7 +692,8 @@ route('GET', '/api/players/:id/profile', (req, res, { user, params }) => {
     .sort((a, b) => b.pct - a.pct || b.games - a.games)[0] || null;
   const signups = db.prepare(`SELECT SUM(a.status='in') AS ins, SUM(a.status='out') AS outs FROM attendance a JOIN matches m ON m.id=a.match_id
     WHERE a.player_id=? AND m.status<>'cancelled'`).get(p.id);
-  send(res, 200, { player: pubPlayer(p, false), totals: {
+  const ability_history = db.prepare(`SELECT old_val, new_val, body, created_at FROM news WHERE kind='ability' AND player_id=? ORDER BY id DESC LIMIT 10`).all(p.id);
+  send(res, 200, { ability_history, player: pubPlayer(p, false), totals: {
     played: list.length, won: count('W'), drawn: count('D'), lost: count('L'), goals: sum('goals'), assists: sum('assists'),
     motm: sum('motm'), own_goals: sum('own_goals'), win_pct: list.length ? Math.round(count('W') / list.length * 100) : 0,
     signed_in: signups.ins || 0, signed_out: signups.outs || 0,
@@ -759,6 +782,63 @@ route('PUT', '/api/settings/points', (req, res, { user, body }) => {
   }
   setSetting('point_rules', JSON.stringify(rules));
   send(res, 200, { rules });
+});
+
+// ---------- automatic man-of-the-match announcements ----------
+// Voting closes by time, so check regularly and post once per match (only votes that closed in the last 7 days).
+const announceMotm = () => {
+  const now = Date.now();
+  for (const m of db.prepare(`SELECT * FROM matches WHERE status='played'`).all()) {
+    const c = voteClosesAt(m);
+    if (!c) continue;
+    const closed = Date.parse(c);
+    if (closed > now || now - closed > 7 * 864e5) continue;
+    if (db.prepare(`SELECT 1 FROM news WHERE kind='motm' AND match_id=?`).get(m.id)) continue;
+    const winners = motmWinners(m.id);
+    if (!winners.length) continue;
+    const names = winners.map((id) => db.prepare('SELECT name FROM players WHERE id=?').get(id)?.name || '?');
+    const top = db.prepare('SELECT COUNT(*) AS n FROM motm_votes WHERE match_id=? AND player_id=?').get(m.id, winners[0]).n;
+    const total = db.prepare('SELECT COUNT(*) AS n FROM motm_votes WHERE match_id=?').get(m.id).n;
+    const body = `${m.team_a_name} ${m.score_a}-${m.score_b} ${m.team_b_name} · ${top} of ${total} vote${total === 1 ? '' : 's'}${winners.length > 1 ? ' each (shared)' : ''}`;
+    db.prepare(`INSERT INTO news(kind, title, body, player_id, match_id, created_at) VALUES('motm', ?, ?, ?, ?, ?)`)
+      .run(`MAN OF THE MATCH: ${names.join(' & ').toUpperCase()}`, body, winners[0], m.id, new Date(closed).toISOString());
+    console.log(`[news] MOTM announced for match ${m.id}: ${names.join(' & ')}`);
+  }
+};
+try { announceMotm(); } catch (e) { console.error(e); }
+setInterval(() => { try { announceMotm(); } catch (e) { console.error(e); } }, 5 * 60e3);
+
+// ---------- routes: news ----------
+const newsRow = (n) => ({ ...n, pinned: !!n.pinned });
+route('GET', '/api/news', (req, res, { query }) => {
+  announceMotm();
+  const limit = Math.min(Number(query.get('limit')) || 50, 200);
+  const rows = db.prepare('SELECT * FROM news ORDER BY pinned DESC, id DESC LIMIT ?').all(limit).map(newsRow);
+  const latest = db.prepare('SELECT MAX(id) AS id FROM news').get().id || 0;
+  send(res, 200, { news: rows, latest_id: latest });
+});
+route('POST', '/api/news', (req, res, { user, body }) => {
+  requireAdmin(user);
+  const title = String(body.title || '').trim().slice(0, 80);
+  if (!title) bad('Give the announcement a headline');
+  const r = db.prepare('INSERT INTO news(kind, title, body, pinned, created_by) VALUES(?,?,?,?,?)')
+    .run('post', title, String(body.body || '').trim().slice(0, 1000), body.pinned ? 1 : 0, user.id);
+  send(res, 201, { id: Number(r.lastInsertRowid) });
+});
+route('PUT', '/api/news/:id', (req, res, { user, body, params }) => {
+  requireAdmin(user);
+  const n = db.prepare('SELECT * FROM news WHERE id=?').get(Number(params.id));
+  if (!n) throw new HttpError(404, 'Not found');
+  const title = body.title != null ? String(body.title).trim().slice(0, 80) || n.title : n.title;
+  const text = body.body != null ? String(body.body).trim().slice(0, 1000) : n.body;
+  const pinned = body.pinned != null ? (body.pinned ? 1 : 0) : n.pinned;
+  db.prepare('UPDATE news SET title=?, body=?, pinned=? WHERE id=?').run(title, text, pinned, n.id);
+  send(res, 200, { ok: true });
+});
+route('DELETE', '/api/news/:id', (req, res, { user, params }) => {
+  requireAdmin(user);
+  db.prepare('DELETE FROM news WHERE id=?').run(Number(params.id));
+  send(res, 200, { ok: true });
 });
 
 // ---------- routes: stats ----------

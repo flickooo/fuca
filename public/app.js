@@ -83,15 +83,26 @@ function shell(active) {
   const me = S.me;
   return `
   <header class="topbar">
-    <div class="pageline"><span class="w">P${location.hash.startsWith('#/live') ? 310 : location.hash.startsWith('#/player') ? 306 : (TABS.find((t) => t.id === active) || TABS[0]).page}</span><span class="c">FUDBAL</span><span class="y clock">${clockText()}</span></div>
-    <div class="titleband"><span class="dh">FUDBAL TEXT</span><span class="who"><span class="c">${esc(me.name.toUpperCase())}</span>${me.is_admin ? ' <span class="m">ADMIN</span>' : me.admin_account ? ' <button class="linkbtn m" id="adminpin">[ADMIN]</button>' : ''} <button class="linkbtn" id="logout">[EXIT]</button></span></div>
+    <div class="pageline"><span class="w">P${location.hash.startsWith('#/news') ? 101 : location.hash.startsWith('#/live') ? 310 : location.hash.startsWith('#/player') ? 306 : (TABS.find((t) => t.id === active) || TABS[0]).page}</span><span class="c">FUDBAL</span><span class="y clock">${clockText()}</span></div>
+    <div class="titleband"><span class="dh">FUDBAL TEXT</span><span class="who"><span class="c hide-sm">${esc(me.name.toUpperCase())}</span>${me.is_admin ? ' <span class="m">ADMIN</span>' : me.admin_account ? ' <button class="linkbtn m" id="adminpin">[ADMIN]</button>' : ''} <a class="linkbtn newslink" id="newslink" href="#/news">[NEWS${S.newsUnread ? ` <span class="nb">${S.newsUnread}</span>` : ''}]</a> <button class="linkbtn" id="logout">[EXIT]</button></span></div>
   </header>
   <main id="view"></main>
   <nav class="tabs fastext">${TABS.filter((t) => !t.admin || me.is_admin).map((t) =>
     `<a class="tab k-${t.key} ${t.id === active ? 'active' : ''}" href="#/${t.id}">${t.label}</a>`).join('')}</nav>`;
 }
+const NEWS_SEEN = 'fm_news_seen';
+const newsSeen = () => { try { return Number(localStorage.getItem(NEWS_SEEN)) || 0; } catch { return 0; } };
+async function loadNews() {
+  const r = await api('GET', '/api/news?limit=50');
+  S.news = r.news;
+  S.newsUnread = r.news.filter((n) => n.id > newsSeen()).length;
+  const nl = $('#newslink');
+  if (nl) nl.innerHTML = `[NEWS${S.newsUnread ? ` <span class="nb">${S.newsUnread}</span>` : ''}]`;
+  return r;
+}
 function mount(active) {
   app.innerHTML = shell(active);
+  loadNews().catch(() => {});
   $('#logout').onclick = async () => { await api('POST', '/api/logout').catch(() => {}); S.me = null; location.hash = ''; renderLogin(); };
   const ap = $('#adminpin');
   if (ap) ap.onclick = async () => { await api('POST', '/api/logout').catch(() => {}); S.me = null; S.wantPin = true; renderLogin(); toast('Log in again with your admin PIN'); };
@@ -107,6 +118,7 @@ async function route() {
     else if (page === 'tactics') await viewTactics(arg ? Number(arg) : null);
     else if (page === 'live' && arg) await viewLive(Number(arg));
     else if (page === 'player' && arg) await viewProfile(Number(arg));
+    else if (page === 'news') await viewNews();
     else if (page === 'fixtures') await viewFixtures();
     else if (page === 'stats') await viewStats();
     else if (page === 'admin' && S.me.is_admin) await viewAdmin(arg || 'squad', arg2);
@@ -201,12 +213,15 @@ async function viewMatch(id) {
       <p>No match scheduled yet.</p>${S.me.is_admin ? '<a class="btn primary" href="#/admin/matches/new">Schedule a match</a>' : '<p>Ask an admin to create one.</p>'}</div></div>`;
     return;
   }
-  const { match: m } = await api('GET', `/api/matches/${id}`);
+  const [{ match: m }] = await Promise.all([api('GET', `/api/matches/${id}`), loadNews().catch(() => {})]);
   const render = (m) => {
     const mine = m.attendance.find((a) => a.player_id === S.me.id);
     const open = m.status === 'upcoming';
     const played = m.status === 'played' && m.score_a != null;
+    const recent = (S.news || []).filter((n) => n.pinned || Date.now() - new Date(n.created_at) < 14 * 864e5).slice(0, 3);
     v.innerHTML = `
+    ${recent.length ? `<div class="panel newsstrip"><div class="panel-h"><span>News</span>${S.newsUnread ? `<span class="nb flash">${S.newsUnread} NEW</span>` : ''}<span class="spacer"></span><a class="btn sm" href="#/news">All news ›</a></div>
+      <div class="panel-b">${recent.map((n) => newsItem(n, false)).join('')}</div></div>` : ''}
     <div class="grid2">
       <div>
         <div class="panel"><div class="panel-h">${id === S.nextId ? 'Next Match' : 'Match'}<span class="spacer"></span>
@@ -434,6 +449,82 @@ async function viewLive(id) {
   }, 4000);
 }
 
+// ---------- news ----------
+const fmtStamp = (iso) => { const d = new Date(iso); return `${DAYS[d.getDay()]} ${d.getDate()} ${MONTHS[d.getMonth()]} ${fmtTime(iso)}`; };
+function newsItem(n, full) {
+  const admin = S.me.is_admin && full;
+  const who = n.player_id && S.pmap[n.player_id];
+  let head, bodyHtml = n.body ? `<div class="nbody">${esc(n.body)}</div>` : '';
+  if (n.kind === 'ability') {
+    const up = n.new_val > n.old_val;
+    head = `<span class="${up ? 'g' : 'r'}">${up ? '▲' : '▼'} ${up ? 'ABILITY UP' : 'ABILITY DOWN'}</span>`;
+    bodyHtml = `<div class="nabl"><a class="plink" href="#/player/${n.player_id}">${esc((who?.name || n.title.split(': ')[1] || '').toUpperCase())}</a>
+      <span class="${ablCls(n.old_val)}">${n.old_val}</span> <span class="w">→</span> <b class="${ablCls(n.new_val)}">${n.new_val}</b></div>` + bodyHtml;
+  } else if (n.kind === 'motm') {
+    head = `<span class="m">★ MAN OF THE MATCH</span>`;
+    bodyHtml = `<div class="nabl"><b class="y">${esc(n.title.split(': ').slice(1).join(': '))}</b></div>
+      <div class="nbody">${n.match_id ? `<a class="plink c" href="#/match/${n.match_id}">${esc(n.body)} ›</a>` : esc(n.body)}</div>`;
+  } else head = `<span class="y">${esc(n.title.toUpperCase())}</span>`;
+  return `<div class="news-item ${n.pinned ? 'pinned' : ''} ${n.id > newsSeen() ? 'unread' : ''}">
+    <div class="nhead">${n.pinned ? '<span class="m">📌</span> ' : ''}${head}<span class="spacer"></span><span class="dim nd">${fmtStamp(n.created_at)}</span></div>
+    ${bodyHtml}
+    ${admin ? `<div class="btn-row nact">
+      ${n.kind === 'post' ? `<button class="btn sm ghost" data-nedit="${n.id}">Edit</button>` : ''}
+      <button class="btn sm ghost" data-npin="${n.id}" data-v="${n.pinned ? 0 : 1}">${n.pinned ? 'Unpin' : 'Pin'}</button>
+      <button class="btn sm ghost" data-nshare="${n.id}">WhatsApp</button>
+      <button class="btn sm danger" data-ndel="${n.id}">Delete</button></div>` : ''}
+  </div>`;
+}
+function newsShare(n) {
+  const who = n.player_id && S.pmap[n.player_id];
+  const text = n.kind === 'motm' ? `📺 *FUDBAL TEXT P101*\n⭐ *${n.title}*\n${n.body}` : n.kind === 'ability'
+    ? `📺 *FUDBAL TEXT P101*\n${n.new_val > n.old_val ? '▲ ABILITY UP' : '▼ ABILITY DOWN'}: *${who?.name || ''}* ${n.old_val} → ${n.new_val}${n.body ? `\n${n.body}` : ''}`
+    : `📺 *FUDBAL TEXT P101*\n*${n.title}*${n.body ? `\n${n.body}` : ''}`;
+  window.open(`https://wa.me/?text=${encodeURIComponent(text + `\n\n${location.origin}/#/news`)}`, '_blank');
+}
+function newsForm(n, done) {
+  n = n || { title: '', body: '', pinned: false };
+  modal(n.id ? 'Edit announcement' : 'New announcement', `
+    <form id="nf">
+      <label class="f"><span>Headline</span><input type="text" name="title" maxlength="80" required value="${esc(n.title)}" placeholder="e.g. NEW PITCH FROM NEXT WEEK"></label>
+      <label class="f"><span>Text (optional)</span><textarea name="body" rows="4" maxlength="1000" placeholder="Details…">${esc(n.body)}</textarea></label>
+      <label class="check"><input type="checkbox" name="pinned" ${n.pinned ? 'checked' : ''}> Pin to the top (stays on the match page)</label>
+      <div class="err" id="nerr"></div>
+      <div class="btn-row" style="justify-content:flex-end"><button type="button" class="btn ghost" data-close>Cancel</button><button class="btn primary">${n.id ? 'Save' : 'Publish'}</button></div>
+    </form>`, (root, close) => {
+    $('#nf', root).onsubmit = async (e) => {
+      e.preventDefault(); const f = e.target;
+      const body = { title: f.title.value, body: f.body.value, pinned: f.pinned.checked };
+      try { n.id ? await api('PUT', `/api/news/${n.id}`, body) : await api('POST', '/api/news', body); close(); toast(n.id ? 'Saved' : 'Published'); done(); }
+      catch (err) { $('#nerr', root).textContent = err.message; }
+    };
+  });
+}
+function bindNews(root, reload) {
+  $$('[data-nedit]', root).forEach((b) => (b.onclick = () => newsForm(S.news.find((n) => n.id === Number(b.dataset.nedit)), reload)));
+  $$('[data-npin]', root).forEach((b) => (b.onclick = async () => { try { await api('PUT', `/api/news/${b.dataset.npin}`, { pinned: b.dataset.v === '1' }); reload(); } catch (e) { fail(e); } }));
+  $$('[data-nshare]', root).forEach((b) => (b.onclick = () => newsShare(S.news.find((n) => n.id === Number(b.dataset.nshare)))));
+  $$('[data-ndel]', root).forEach((b) => (b.onclick = async () => { if (!confirm('Delete this announcement?')) return; try { await api('DELETE', `/api/news/${b.dataset.ndel}`); toast('Deleted'); reload(); } catch (e) { fail(e); } }));
+}
+async function viewNews() {
+  const v = mount('news');
+  await loadPlayers();
+  const r = await loadNews();
+  const seenBefore = newsSeen();
+  const draw = () => {
+    v.innerHTML = `<div class="panel"><div class="panel-h">News<span class="spacer"></span>${S.me.is_admin ? '<button class="btn sm primary" id="newpost">+ Announcement</button>' : ''}</div>
+      <div class="panel-b">${S.news.map((n) => newsItem(n, true)).join('') || '<div class="empty-state"><div class="ico">NO NEWS</div><p>Nothing announced yet.</p></div>'}</div></div>`;
+    const np = $('#newpost', v);
+    if (np) np.onclick = () => newsForm(null, reload);
+    bindNews(v, reload);
+  };
+  const reload = async () => { await loadNews(); draw(); };
+  draw();
+  // mark as read (keep the "unread" highlight visible on this visit)
+  try { localStorage.setItem(NEWS_SEEN, String(Math.max(r.latest_id, seenBefore))); } catch {}
+  S.newsUnread = 0; const nl = $('#newslink'); if (nl) nl.innerHTML = '[NEWS]';
+}
+
 // ---------- guests ----------
 async function guestForm(m, done) {
   let guests = [];
@@ -499,7 +590,7 @@ function shareReport(m) {
 async function viewProfile(id) {
   const v = mount('stats');
   await loadPlayers();
-  const { player: p, totals: t, games, best_mate } = await api('GET', `/api/players/${id}/profile`);
+  const { player: p, totals: t, games, best_mate, ability_history: ah } = await api('GET', `/api/players/${id}/profile`);
   const form = games.slice(0, 5);
   const chip = (r) => `<span class="res res-${r}">${r}</span>`;
   const tile = (n, l, cls = '') => `<div class="tile"><div class="n ${cls}">${n}</div><div class="l">${l}</div></div>`;
@@ -516,6 +607,9 @@ async function viewProfile(id) {
       ${best_mate && S.pmap[best_mate.id] ? `<p class="muted">Best partner: <a class="plink" href="#/player/${best_mate.id}">${esc(S.pmap[best_mate.id].name.toUpperCase())}</a>
         — <span class="g">${best_mate.pct}% wins</span> in ${best_mate.games} games together</p>` : ''}
       ${t.own_goals ? `<p class="r" style="margin:0">Own goals: ${t.own_goals} 🙈</p>` : ''}
+      ${ah && ah.length ? `<div class="c" style="margin-top:8px">ABILITY HISTORY</div>${ah.map((h) => `<div class="ahist"><span class="dim">${fmtShort(h.created_at)}</span>
+        <span class="${ablCls(h.old_val)}">${h.old_val}</span> → <b class="${ablCls(h.new_val)}">${h.new_val}</b> <span class="${h.new_val > h.old_val ? 'g' : 'r'}">${h.new_val > h.old_val ? '▲' : '▼'}</span>
+        ${h.body ? `<span class="dim">· ${esc(h.body)}</span>` : ''}</div>`).join('')}` : ''}
     </div>
   </div>
   <div class="panel"><div class="panel-h" style="background:var(--re);color:#fff">Recent matches</div>
@@ -930,6 +1024,10 @@ function playerForm(p, done) {
         <label class="f"><span>Position</span><select name="position">${['GK', 'DEF', 'MID', 'FWD'].map((x) => `<option ${x === p.position ? 'selected' : ''}>${x}</option>`).join('')}</select></label>
         <label class="f"><span>Ability (0–10)</span><select name="rating">${ablOptions(p.rating)}</select></label>
       </div>
+      <div id="annrow" hidden class="annrow">
+        <label class="check"><input type="checkbox" name="announce"> <span id="anntxt">Announce this change in the news</span></label>
+        <label class="f"><span>Comment (optional)</span><input type="text" name="note" maxlength="300" placeholder="e.g. 3 goals in 2 games — earned it"></label>
+      </div>
       <div ${guest ? 'hidden' : ''}>
       <label class="check"><input type="checkbox" name="is_admin" ${p.is_admin ? 'checked' : ''}> Admin (can create matches &amp; pick teams)</label>
       <label class="f" id="pinf" ${p.is_admin ? '' : 'hidden'}><span class="m">Admin PIN ${p.has_pin ? '(set — type to change)' : '(required for admin rights)'}</span>
@@ -944,10 +1042,16 @@ function playerForm(p, done) {
     </form>`, (root, close) => {
     const f = $('#pf', root);
     f.is_admin.onchange = () => { $('#pinf', root).hidden = !f.is_admin.checked; };
+    f.rating.onchange = () => {
+      const nv = Number(f.rating.value), changed = !isNew && nv !== p.rating, up = nv > p.rating;
+      $('#annrow', root).hidden = !changed;
+      if (changed) { f.announce.checked = up; $('#anntxt', root).innerHTML = `Announce in the news: <span class="${up ? 'g' : 'r'}">${up ? '▲' : '▼'} ${p.rating} → ${nv}</span>${up ? '' : ' <span class="dim">(off by default)</span>'}`; }
+    };
     f.onsubmit = async (e) => {
       e.preventDefault();
       const body = { name: f.name.value, phone: f.phone.value, position: f.position.value, rating: Number(f.rating.value), is_admin: f.is_admin.checked, active: f.active.checked, pin: f.pin.value };
       if (guest && !f.phone.value.trim()) { delete body.phone; delete body.is_admin; delete body.active; delete body.pin; }
+      if (!isNew && Number(f.rating.value) !== p.rating) { body.announce = f.announce.checked; body.note = f.note.value; }
       try { isNew ? await api('POST', '/api/players', body) : await api('PUT', `/api/players/${p.id}`, body); close(); toast('Saved'); done(); }
       catch (err) { $('#perr', root).textContent = err.message; }
     };
