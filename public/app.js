@@ -239,7 +239,7 @@ async function viewMatch(id) {
                 mine.status === 'in' ? '<span class="g flash">YOU\'RE IN.</span> See you on the pitch!' : 'You\'re marked as not coming.'}</div>` : ''}
           </div>
         </div>
-        ${m.goals.length || played ? `<div class="panel"><div class="panel-h">${played ? 'Result' : 'Goals'}<span class="spacer"></span>${played ? '<button class="btn sm" id="report">Share report</button>' : ''}</div><div class="panel-b">${m.goals.length ? scorersHtml(m) : '<span class="dim">No goals were recorded live.</span>'}${pointsHtml(m)}</div></div>` : ''}
+        ${m.goals.length || played ? `<div class="panel"><div class="panel-h">${played ? 'Result' : 'Goals'}<span class="spacer"></span>${played ? '<button class="btn sm" id="report">Share report</button>' : ''}</div><div class="panel-b">${m.goals.length ? scorersHtml(m) + goalTimeline(m) : '<span class="dim">No goals were recorded live.</span>'}${pointsHtml(m)}</div></div>` : ''}
         ${m.motm ? motmHtml(m) : ''}
         <div class="panel"><div class="panel-h">Teams</div><div class="panel-b">
           ${m.lineup_published ? `<div class="btn-row"><a class="btn" href="#/tactics/${m.id}">View line-up ›</a>
@@ -309,6 +309,26 @@ function goalTally(m) {
     if (x.assist_id) a[x.assist_id] = (a[x.assist_id] || 0) + 1;
   }
   return { g, a };
+}
+// Goal time: match minute when the clock was started with Kick off, otherwise the clock time it was recorded.
+function goalTime(m, g) {
+  if (m.clock_started && m.kicked_off_at) {
+    const min = Math.floor((Date.parse(g.created_at) - Date.parse(m.kicked_off_at)) / 60000) + 1;
+    if (min >= 1 && min < 200) return { label: `${min}'`, minute: true };
+  }
+  return { label: fmtTime(g.created_at), minute: false };
+}
+function goalTimeline(m) {
+  let a = 0, b = 0;
+  const rows = [...m.goals].sort((x, y) => Date.parse(x.created_at) - Date.parse(y.created_at)).map((g) => {
+    g.team === 'A' ? a++ : b++;
+    const t = goalTime(m, g);
+    return `<div class="tl ${g.team}"><span class="tm ${t.minute ? 'c' : 'dim'}">${t.label}</span><span class="chip-team ${g.team}"></span>
+      <span class="who"><a class="plink" href="#/player/${g.scorer_id}">${esc(pname(g.scorer_id).toUpperCase())}</a>${g.own_goal ? ' <span class="r">OG</span>' : ''}${g.assist_id ? ` <span class="c">(${esc(pname(g.assist_id))})</span>` : ''}</span>
+      <span class="sc y">${a}-${b}</span></div>`;
+  }).join('');
+  const clockNote = m.clock_started ? '' : `<div class="dim" style="font-size:16px;margin-top:4px">Times are when each goal was recorded (kick-off wasn't pressed).</div>`;
+  return `<div class="timeline">${rows}</div>${clockNote}`;
 }
 function scorersHtml(m) {
   const side = (team) => {
@@ -588,10 +608,10 @@ function shareReport(m) {
     const c = {}; const order = [];
     for (const x of m.goals.filter((x) => x.team === team)) {
       const k = (x.own_goal ? 'og' : '') + x.scorer_id;
-      if (!c[k]) { c[k] = { n: 0, name: pname(x.scorer_id) + (x.own_goal ? ' (OG)' : '') }; order.push(c[k]); }
-      c[k].n++;
+      if (!c[k]) { c[k] = { times: [], name: pname(x.scorer_id) + (x.own_goal ? ' (OG)' : '') }; order.push(c[k]); }
+      const t = goalTime(m, x); if (t.minute) c[k].times.push(t.label);
     }
-    return order.map((s) => s.name + (s.n > 1 ? ' ' + s.n : '')).join(', ');
+    return order.map((s) => s.name + (s.times.length ? ' ' + s.times.join(', ') : '')).join(' · ');
   };
   const pad = (t, n) => (t + ' '.repeat(n)).slice(0, n);
   const A = m.team_a_name.toUpperCase(), B = m.team_b_name.toUpperCase();

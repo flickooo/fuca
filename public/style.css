@@ -367,3 +367,11 @@ table.fm td.pts b { font-weight: normal; color: var(--ye); }
 .grid2b { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .gkb { margin-top: 8px; font-size: 19px; }
 .gkb b { font-weight: normal; }
+
+/* ---------- goal timeline ---------- */
+.timeline { margin-top: 10px; border-top: 2px dotted #223; padding-top: 6px; }
+.tl { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
+.tl .tm { width: 52px; flex: none; text-align: right; }
+.tl .who { flex: 1; min-width: 0; text-transform: uppercase; }
+.tl .who .c { text-transform: none; }
+.tl .sc { flex: none; }
