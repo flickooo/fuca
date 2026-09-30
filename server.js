@@ -342,7 +342,7 @@ const matchDetail = (id, user) => {
   const goals = db.prepare('SELECT id, team, scorer_id, assist_id, own_goal, created_by, created_at FROM goals WHERE match_id=? ORDER BY id').all(id)
     .map((g) => ({ ...g, own_goal: !!g.own_goal }));
   return { ...m, lineup_published: !!m.lineup_published, capacity: cap, attendance, lineup, goals,
-    motm: motmInfo(m, user), points: matchPoints(m), predictions: predInfo(m, user), my_status: mine ? mine.status : null,
+    motm: motmInfo(m, user), points: matchPoints(m), predictions: predInfo(m, user), live_open: liveOpen(m), live_opens_at: new Date(Date.parse(m.starts_at) - LIVE_OPENS_MIN * 60e3).toISOString(), my_status: mine ? mine.status : null,
     ...(user.is_admin ? { late_drops: db.prepare('SELECT player_id, at FROM late_drops WHERE match_id=? ORDER BY at').all(id) } : {}) };
 };
 
@@ -585,17 +585,35 @@ const syncScore = (matchId) => {
   const c = db.prepare(`SELECT SUM(team='A') AS a, SUM(team='B') AS b, COUNT(*) AS n FROM goals WHERE match_id=?`).get(matchId);
   db.prepare('UPDATE matches SET score_a=?, score_b=? WHERE id=?').run(c.a || 0, c.b || 0, matchId);
 };
-const liveMatch = (id) => {
+const LIVE_OPENS_MIN = 30; // live scoring / kick-off only from 30 min before the scheduled start
+const liveOpen = (m) => m.status !== 'upcoming' || Date.now() >= Date.parse(m.starts_at) - LIVE_OPENS_MIN * 60e3;
+const liveMatch = (id, user) => {
   const m = db.prepare('SELECT * FROM matches WHERE id=?').get(id);
   if (!m) throw new HttpError(404, 'Match not found');
   if (m.status === 'cancelled') bad('This match was cancelled');
+  if (user && !liveOpen(m)) {
+    const t = new Date(Date.parse(m.starts_at) - LIVE_OPENS_MIN * 60e3);
+    bad(`Live score opens ${LIVE_OPENS_MIN} min before kick-off (${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')})`);
+  }
   return m;
 };
+
+// Self-heal: an upcoming match whose clock was started more than 30 min before its scheduled time was started by mistake.
+{
+  const early = db.prepare(`SELECT * FROM matches WHERE status='upcoming' AND (clock_started=1 OR kicked_off_at IS NOT NULL)`).all()
+    .filter((m) => Date.parse(m.kicked_off_at || 0) < Date.parse(m.starts_at) - LIVE_OPENS_MIN * 60e3);
+  for (const m of early) {
+    const goals = db.prepare('SELECT COUNT(*) AS n FROM goals WHERE match_id=?').get(m.id).n;
+    db.prepare('DELETE FROM goals WHERE match_id=?').run(m.id);
+    db.prepare('UPDATE matches SET clock_started=0, kicked_off_at=NULL, score_a=NULL, score_b=NULL WHERE id=?').run(m.id);
+    console.log(`[fix] Match ${m.id} (${m.starts_at}) was started early by mistake — kick-off reset${goals ? `, ${goals} goal(s) removed` : ''}`);
+  }
+}
 
 // Kick off = the official start of the clock (keepers' clean minutes count from here).
 // body: {} = now, { minutes_ago: n } or { at: ISO } when someone forgot to press it.
 route('POST', '/api/matches/:id/kickoff', (req, res, { user, body, params }) => {
-  const m = liveMatch(Number(params.id));
+  const m = liveMatch(Number(params.id), user);
   if (!m.lineup_published) bad('Teams are not published yet');
   if (m.status === 'played' && !user.is_admin) bad('Only an admin can change the kick-off of a finished match');
   if (m.clock_started && !user.is_admin && !body.fix) bad('The clock is already running');
@@ -612,7 +630,7 @@ route('POST', '/api/matches/:id/kickoff', (req, res, { user, body, params }) => 
 });
 
 route('POST', '/api/matches/:id/goals', (req, res, { user, body, params }) => {
-  const m = liveMatch(Number(params.id));
+  const m = liveMatch(Number(params.id), user);
   const lineup = Object.fromEntries(db.prepare('SELECT player_id, team FROM lineups WHERE match_id=?').all(m.id).map((l) => [l.player_id, l.team]));
   const scorer = Number(body.scorer_id);
   const sTeam = lineup[scorer];
@@ -648,6 +666,16 @@ route('DELETE', '/api/matches/:id/goals/:gid', (req, res, { user, params }) => {
   const m = liveMatch(Number(params.id));
   db.prepare('DELETE FROM goals WHERE id=? AND match_id=?').run(Number(params.gid), m.id);
   syncScore(m.id);
+  send(res, 200, { match: matchDetail(m.id, user) });
+});
+
+route('POST', '/api/matches/:id/reset-live', (req, res, { user, params }) => {
+  requireAdmin(user);
+  const m = db.prepare('SELECT * FROM matches WHERE id=?').get(Number(params.id));
+  if (!m) throw new HttpError(404, 'Match not found');
+  if (m.status !== 'upcoming') bad('Only a match that hasn\'t finished can be reset');
+  db.prepare('DELETE FROM goals WHERE match_id=?').run(m.id);
+  db.prepare('UPDATE matches SET clock_started=0, kicked_off_at=NULL, score_a=NULL, score_b=NULL WHERE id=?').run(m.id);
   send(res, 200, { match: matchDetail(m.id, user) });
 });
 

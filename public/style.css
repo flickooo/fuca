@@ -413,3 +413,12 @@ table.fm td.pts b { font-weight: normal; color: var(--ye); }
 .alerts .alert.sent .apre { color: var(--dim); }
 .nrow { display: flex; align-items: center; gap: 8px; padding: 4px 0; border-bottom: 1px dotted #223; }
 .nrow .nm { flex: 1; text-transform: uppercase; }
+
+/* ---------- live entry (Teams page) + live-now strip (match page) ---------- */
+.liveentry { margin-bottom: 12px; text-align: center; }
+.liveentry .live-go { width: 100%; min-height: 52px; font-size: 28px; }
+.liveentry .dim { font-size: 17px; margin-top: 4px; }
+.liveentry.closed { padding: 6px; box-shadow: inset 0 0 0 2px #333; }
+.livestrip { display: flex; align-items: center; gap: 8px; background: var(--re); color: var(--wh); text-decoration: none; padding: 6px 10px; margin-bottom: 12px; font-size: 22px; }
+.livestrip b { font-weight: normal; color: var(--ye); flex: 1; min-width: 0; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center; }
+.livestrip > span { flex: none; white-space: nowrap; }

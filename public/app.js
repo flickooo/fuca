@@ -219,7 +219,9 @@ async function viewMatch(id) {
     const open = m.status === 'upcoming';
     const played = m.status === 'played' && m.score_a != null;
     const recent = (S.news || []).filter((n) => n.pinned || Date.now() - new Date(n.created_at) < 14 * 864e5).slice(0, 3);
+    const liveNow = m.status === 'upcoming' && m.clock_started;
     v.innerHTML = `
+    ${liveNow ? `<a class="livestrip" href="#/live/${m.id}"><span><span class="flash">●</span> LIVE</span> <b><span class="chip-team A"></span> ${m.score_a ?? 0}-${m.score_b ?? 0} <span class="chip-team B" style="outline:1px solid #fff"></span></b> <span>WATCH ›</span></a>` : ''}
     ${S.me.is_admin ? alertsHtml(m) : ''}
     ${recent.length ? `<div class="panel newsstrip"><div class="panel-h"><span>News</span>${S.newsUnread ? `<span class="nb flash">${S.newsUnread} NEW</span>` : ''}<span class="spacer"></span><a class="btn sm" href="#/news">All news ›</a></div>
       <div class="panel-b">${recent.map((n) => newsItem(n, false)).join('')}</div></div>` : ''}
@@ -245,7 +247,7 @@ async function viewMatch(id) {
         ${m.motm ? motmHtml(m) : ''}
         <div class="panel"><div class="panel-h">Teams</div><div class="panel-b">
           ${m.lineup_published ? `<div class="btn-row"><a class="btn" href="#/tactics/${m.id}">View line-up ›</a>
-              ${m.status !== 'cancelled' ? `<a class="btn ${m.status === 'upcoming' ? 'danger live-btn' : 'ghost'}" href="#/live/${m.id}">${m.status === 'upcoming' ? '● Live score' : 'Edit goals'}</a>` : ''}</div>`
+              ${m.status === 'played' ? `<a class="btn ghost" href="#/live/${m.id}">Edit goals</a>` : ''}</div>`
             : S.me.is_admin ? `<p class="muted">Teams not published yet.</p><a class="btn primary" href="#/tactics/${m.id}">Pick teams ›</a>`
             : '<p class="muted">The manager hasn\'t announced the teams yet.</p>'}
         </div></div>
@@ -404,12 +406,25 @@ function motmHtml(m) {
   </div></div>`;
 }
 
+// Entry to the live score (on the Teams page). Opens 30 min before kick-off.
+function liveEntry(m) {
+  if (m.status === 'played') return `<div class="liveentry done"><a class="btn ghost" href="#/live/${m.id}">Edit goals ›</a></div>`;
+  if (m.live_open) return `<div class="liveentry"><a class="btn danger live-go" href="#/live/${m.id}"><span class="flash">●</span> ${m.clock_started ? 'LIVE NOW — open live score' : 'LIVE SCORE'} ›</a>
+    <div class="dim">${m.clock_started ? 'Record goals as they happen.' : 'Press ▶ Kick off there when the game actually starts.'}</div></div>`;
+  return `<div class="liveentry closed"><span class="dim">● LIVE SCORE opens at <b class="y">${fmtTime(m.live_opens_at)}</b> (30 min before kick-off)</span></div>`;
+}
+
 // ---------- live scoring ----------
 let livePoll = null;
 async function viewLive(id) {
   const v = mount('match');
   await loadPlayers();
   let m = (await api('GET', `/api/matches/${id}`)).match;
+  if (m.status === 'upcoming' && !m.live_open) {
+    v.innerHTML = `<div class="panel"><div class="panel-h">Live score</div><div class="empty-state"><div class="ico">NOT YET</div>
+      <p>Live score opens at <span class="y">${fmtTime(m.live_opens_at)}</span>, 30 minutes before kick-off.</p><a class="btn" href="#/tactics/${m.id}">‹ Teams</a></div></div>`;
+    return;
+  }
   let sheet = null; // { scorer, team, goalId? }
   let busy = false;
 
@@ -461,7 +476,8 @@ async function viewLive(id) {
       <div class="cols">${col('A')}${col('B')}</div>
       ${m.goals.length ? `<div class="panel-h" style="margin-top:12px">Goals<span class="spacer"></span><span class="sub">tap to fix assist · ✕ to undo</span></div><div class="feed">${feed}</div>` : ''}
       <div class="btn-row" style="margin-top:14px;justify-content:space-between">
-        <a class="btn ghost" href="#/match/${m.id}">‹ Match</a>
+        <a class="btn ghost" href="#/tactics/${m.id}">‹ Teams</a>
+        ${S.me.is_admin && m.status === 'upcoming' && (m.clock_started || m.goals.length) ? '<button class="btn sm danger" id="resetlive">Reset kick-off</button>' : ''}
         ${!ended ? `<button class="btn primary" id="ft">Full time</button>` : ''}
       </div>
     </div>${sheetHtml}`;
@@ -499,7 +515,10 @@ async function viewLive(id) {
     if (ko) ko.onclick = () => {
       const late = m.goals.length || m.status === 'played';
       const go = async (body) => { try { m = (await api('POST', `/api/matches/${m.id}/kickoff`, body)).match; toast('Clock started'); draw(); return true; } catch (err) { fail(err); return false; } };
-      if (!late) return go({});
+      if (!late) {
+        if (!confirm('Start the match clock NOW?\n\nOnly press this when the game actually kicks off — predictions lock and keepers\' clean minutes start counting.')) return;
+        return go({});
+      }
       const d = dt(m.starts_at), p2 = (n) => String(n).padStart(2, '0');
       const firstGoal = m.goals.length ? Math.min(...m.goals.map((g) => Date.parse(g.created_at))) : null;
       modal('When did the game start?', `
@@ -513,6 +532,11 @@ async function viewLive(id) {
         $('#kof', root).onsubmit = async (e) => { e.preventDefault(); const f = e.target;
           if (await go({ at: new Date(`${f.d.value}T${f.t.value}`).toISOString(), fix: true })) close(); };
       });
+    };
+    const rl = $('#resetlive', v);
+    if (rl) rl.onclick = async () => {
+      if (!confirm(`Reset this match to "not started"?${m.goals.length ? `\n\nThe ${m.goals.length} recorded goal${m.goals.length > 1 ? 's' : ''} will be deleted.` : ''}\nPredictions open again.`)) return;
+      try { m = (await api('POST', `/api/matches/${m.id}/reset-live`)).match; toast('Match reset'); draw(); } catch (err) { fail(err); }
     };
     const ft = $('#ft', v);
     if (ft) ft.onclick = async () => {
@@ -903,6 +927,7 @@ function renderTactics(v) {
   const selPid = T.sel?.pid;
 
   v.innerHTML = `
+  ${m.lineup_published && m.status !== 'cancelled' ? liveEntry(m) : ''}
   <div class="panel"><div class="panel-h">Tactics · ${fmtShort(m.starts_at)} ${fmtTime(m.starts_at)}<span class="spacer"></span>
     <span class="sub">${m.team_size} v ${m.team_size}${ed ? (m.lineup_published ? ' · <b class="g">Published</b>' : ' · Draft (only admins see it)') : ''}</span></div>
     ${ed ? `<div class="panel-b btn-row" style="justify-content:space-between">
