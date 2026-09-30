@@ -113,6 +113,14 @@ db.exec(`CREATE TABLE IF NOT EXISTS predictions (
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   PRIMARY KEY (match_id, player_id)
 );
+CREATE TABLE IF NOT EXISTS ratings (
+  match_id INTEGER NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
+  rater_id INTEGER NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+  player_id INTEGER NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+  score INTEGER NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  PRIMARY KEY (match_id, rater_id, player_id)
+);
 CREATE TABLE IF NOT EXISTS late_drops (
   match_id INTEGER NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
   player_id INTEGER NOT NULL REFERENCES players(id) ON DELETE CASCADE,
@@ -328,6 +336,39 @@ const predInfo = (m, user) => {
   return { locked, count: all.length, mine, list: locked ? all.map((p) => ({ ...p, score: predScore(p, m) })) : [] };
 };
 
+// ---- team-mate ratings (1-10), open for RATE_HOURS after full time, averages hidden until closed ----
+const RATE_HOURS = 72;
+const rateClosesAt = (m) => {
+  if (m.status !== 'played') return null;
+  const base = m.ended_at ? Date.parse(m.ended_at) : Date.parse(m.starts_at);
+  return new Date(base + RATE_HOURS * 3600e3).toISOString();
+};
+// trimmed mean: with 5+ ratings the single highest and lowest are dropped (anti-troll)
+const trimmedAvg = (arr) => {
+  if (!arr.length) return null;
+  const a = [...arr].sort((x, y) => x - y);
+  const use = a.length >= 5 ? a.slice(1, -1) : a;
+  return Math.round((use.reduce((x, y) => x + y, 0) / use.length) * 10) / 10;
+};
+const matchRatings = (mid) => {
+  const by = {};
+  for (const r of db.prepare('SELECT player_id, score FROM ratings WHERE match_id=?').all(mid)) (by[r.player_id] ||= []).push(r.score);
+  return Object.entries(by).map(([pid, arr]) => ({ player_id: Number(pid), avg: trimmedAvg(arr), n: arr.length })).sort((a, b) => b.avg - a.avg);
+};
+const ratingInfo = (m, user) => {
+  const closes = rateClosesAt(m);
+  if (!closes) return null;
+  const open = Date.now() < Date.parse(closes);
+  const lineup = db.prepare('SELECT l.player_id, p.is_guest FROM lineups l JOIN players p ON p.id=l.player_id WHERE l.match_id=?').all(m.id);
+  const played = new Set(lineup.map((l) => l.player_id));
+  const eligible = lineup.filter((l) => !l.is_guest).map((l) => l.player_id);
+  const mine = Object.fromEntries(db.prepare('SELECT player_id, score FROM ratings WHERE match_id=? AND rater_id=?').all(m.id, user.id).map((r) => [r.player_id, r.score]));
+  const raters = db.prepare('SELECT DISTINCT rater_id FROM ratings WHERE match_id=?').all(m.id).map((r) => r.rater_id);
+  return { open, closes_at: closes, can_rate: open && played.has(user.id) && !user.is_guest, mine, to_rate: played.size - 1,
+    raters: raters.length, eligible: eligible.length, not_rated: eligible.filter((id) => !raters.includes(id)),
+    results: open ? [] : matchRatings(m.id) };
+};
+
 const matchDetail = (id, user) => {
   const m = db.prepare('SELECT * FROM matches WHERE id=?').get(id);
   if (!m) throw new HttpError(404, 'Match not found');
@@ -342,7 +383,7 @@ const matchDetail = (id, user) => {
   const goals = db.prepare('SELECT id, team, scorer_id, assist_id, own_goal, created_by, created_at FROM goals WHERE match_id=? ORDER BY id').all(id)
     .map((g) => ({ ...g, own_goal: !!g.own_goal }));
   return { ...m, lineup_published: !!m.lineup_published, capacity: cap, attendance, lineup, goals,
-    motm: motmInfo(m, user), points: matchPoints(m), predictions: predInfo(m, user), live_open: liveOpen(m), live_opens_at: new Date(Date.parse(m.starts_at) - LIVE_OPENS_MIN * 60e3).toISOString(), my_status: mine ? mine.status : null,
+    motm: motmInfo(m, user), points: matchPoints(m), predictions: predInfo(m, user), ratings: ratingInfo(m, user), live_open: liveOpen(m), live_opens_at: new Date(Date.parse(m.starts_at) - LIVE_OPENS_MIN * 60e3).toISOString(), my_status: mine ? mine.status : null,
     ...(user.is_admin ? { late_drops: db.prepare('SELECT player_id, at FROM late_drops WHERE match_id=? ORDER BY at').all(id) } : {}) };
 };
 
@@ -706,6 +747,50 @@ route('POST', '/api/matches/:id/prediction', (req, res, { user, body, params }) 
   send(res, 200, { match: matchDetail(m.id, user) });
 });
 
+route('POST', '/api/matches/:id/ratings', (req, res, { user, body, params }) => {
+  const m = db.prepare('SELECT * FROM matches WHERE id=?').get(Number(params.id));
+  if (!m) throw new HttpError(404, 'Match not found');
+  const info = ratingInfo(m, user);
+  if (!info || !info.open) bad('Ratings are closed for this match');
+  if (!info.can_rate) bad('Only players who played can rate');
+  const played = new Set(db.prepare('SELECT player_id FROM lineups WHERE match_id=?').all(m.id).map((r) => r.player_id));
+  const scores = body.scores && typeof body.scores === 'object' ? body.scores : bad('Nothing to save');
+  for (const [pidS, sc] of Object.entries(scores)) {
+    const pid = Number(pidS);
+    if (pid === user.id) bad("You can't rate yourself");
+    if (!played.has(pid)) bad('That player did not play');
+    if (sc == null || sc === '') db.prepare('DELETE FROM ratings WHERE match_id=? AND rater_id=? AND player_id=?').run(m.id, user.id, pid);
+    else db.prepare(`INSERT INTO ratings(match_id, rater_id, player_id, score) VALUES(?,?,?,?)
+      ON CONFLICT(match_id, rater_id, player_id) DO UPDATE SET score=excluded.score, created_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')`).run(m.id, user.id, pid, int(sc, 'Rating', 1, 10));
+  }
+  send(res, 200, { match: matchDetail(m.id, user) });
+});
+
+// Rating averages per player over closed matches (newest first), used by the table, profiles and ability suggestions
+const ratingHistory = () => {
+  const out = {};
+  for (const m of db.prepare(`SELECT * FROM matches WHERE status='played' ORDER BY starts_at DESC, id DESC`).all()) {
+    const c = rateClosesAt(m);
+    if (!c || Date.now() < Date.parse(c)) continue;
+    for (const r of matchRatings(m.id)) (out[r.player_id] ||= []).push({ match_id: m.id, starts_at: m.starts_at, avg: r.avg, n: r.n });
+  }
+  return out;
+};
+const avgOf = (list) => (list.length ? Math.round((list.reduce((x, y) => x + y.avg, 0) / list.length) * 10) / 10 : null);
+
+route('GET', '/api/admin/ability-suggestions', (req, res, { user }) => {
+  requireAdmin(user);
+  const hist = ratingHistory();
+  const out = [];
+  for (const p of db.prepare('SELECT * FROM players WHERE active=1').all()) {
+    const recent = (hist[p.id] || []).slice(0, 10);
+    if (recent.length < 3) continue;           // need at least 3 rated games
+    const avg = avgOf(recent), suggest = Math.max(0, Math.min(10, Math.round(avg)));
+    if (Math.abs(suggest - p.rating) >= 1) out.push({ id: p.id, name: p.name, rating: p.rating, avg, games: recent.length, suggest });
+  }
+  send(res, 200, { suggestions: out.sort((a, b) => Math.abs(b.suggest - b.rating) - Math.abs(a.suggest - a.rating)) });
+});
+
 route('POST', '/api/matches/:id/motm', (req, res, { user, body, params }) => {
   const m = db.prepare('SELECT * FROM matches WHERE id=?').get(Number(params.id));
   if (!m) throw new HttpError(404, 'Match not found');
@@ -801,7 +886,8 @@ route('GET', '/api/players/:id/profile', (req, res, { user, params }) => {
   const badges = p.is_guest ? [] : playerBadges(p.id, hist);
   const rel = relations(p.id, hist);
   const ability_history = db.prepare(`SELECT old_val, new_val, body, created_at FROM news WHERE kind='ability' AND player_id=? ORDER BY id DESC LIMIT 10`).all(p.id);
-  send(res, 200, { ability_history, badges, ...rel, player: pubPlayer(p, false), totals: {
+  const myRatings = ratingHistory()[p.id] || [];
+  send(res, 200, { ability_history, badges, ...rel, ratings: { avg: avgOf(myRatings), games: myRatings.length, last: myRatings.slice(0, 10) }, player: pubPlayer(p, false), totals: {
     played: list.length, won: count('W'), drawn: count('D'), lost: count('L'), goals: sum('goals'), assists: sum('assists'),
     motm: sum('motm'), own_goals: sum('own_goals'), win_pct: list.length ? Math.round(count('W') / list.length * 100) : 0,
     signed_in: signups.ins || 0, signed_out: signups.outs || 0,
@@ -946,6 +1032,12 @@ const announceMilestones = () => {
     }
     if (recent) {
       const exact = db.prepare('SELECT player_id FROM predictions WHERE match_id=? AND a=? AND b=?').all(m.id, m.score_a, m.score_b).map((r) => r.player_id);
+      const rc = rateClosesAt(m);
+      if (rc && now >= Date.parse(rc) && now - Date.parse(rc) < 7 * 864e5) {
+        const top = matchRatings(m.id).filter((r) => r.n >= 3);
+        if (top.length) postNews(`rate:${m.id}`, `⭐ TOP RATED: ${pnameOf(top[0].player_id).toUpperCase()}`,
+          `${top[0].avg} average from ${top[0].n} team-mates · ${scoreLine(m)}`, top[0].player_id, m.id, rc);
+      }
       if (exact.length) postNews(`pred:${m.id}`, `🔮 CALLED IT: ${exact.map((id) => pnameOf(id).toUpperCase()).join(' & ')}`,
         `Predicted ${m.score_a}-${m.score_b} exactly · +${PRED_EXACT} in the predictor league`, exact[0], m.id, endIso);
     }
@@ -1147,6 +1239,7 @@ route('GET', '/api/stats', (req, res) => {
   const aMap = Object.fromEntries(db.prepare(`SELECT g.assist_id AS id, COUNT(*) AS n FROM goals g JOIN matches m ON m.id=g.match_id
     WHERE g.assist_id IS NOT NULL AND m.status<>'cancelled' GROUP BY g.assist_id`).all().map((r) => [r.id, r.n]));
   const mMap = {}, pMap = {};
+  const rHist = ratingHistory();
   const R = pointRules();
   for (const m of db.prepare(`SELECT * FROM matches WHERE status='played'`).all()) {
     const c = voteClosesAt(m);
@@ -1161,7 +1254,8 @@ route('GET', '/api/stats', (req, res) => {
     players: rows.map((r) => ({ ...r, won: r.won || 0, drawn: r.drawn || 0, lost: r.lost || 0, gf: r.gf || 0, ga: r.ga || 0,
       signed_in: sMap[r.id]?.ins || 0, signed_out: sMap[r.id]?.outs || 0, goals: gMap[r.id] || 0, assists: aMap[r.id] || 0, motm: mMap[r.id] || 0,
       rating: r.rating, points: r2(pMap[r.id]?.pts || 0), ppg: r.played ? r2((pMap[r.id]?.pts || 0) / r.played) : 0,
-      gk_games: pMap[r.id]?.gk_games || 0, conceded: pMap[r.id]?.conceded || 0, clean_blocks: pMap[r.id]?.blocks || 0 })),
+      gk_games: pMap[r.id]?.gk_games || 0, conceded: pMap[r.id]?.conceded || 0, clean_blocks: pMap[r.id]?.blocks || 0,
+      rtg: avgOf(rHist[r.id] || []), rated: (rHist[r.id] || []).length })),
     rules: R,
     predictors: predictorTable(),
   });

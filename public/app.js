@@ -83,7 +83,7 @@ function shell(active) {
   const me = S.me;
   return `
   <header class="topbar">
-    <div class="pageline"><span class="w">P${location.hash.startsWith('#/news') ? 101 : location.hash.startsWith('#/live') ? 310 : location.hash.startsWith('#/player') ? 306 : (TABS.find((t) => t.id === active) || TABS[0]).page}</span><span class="c">FUDBAL</span><span class="y clock">${clockText()}</span></div>
+    <div class="pageline"><span class="w">P${location.hash.startsWith('#/news') ? 101 : location.hash.startsWith('#/rate') ? 312 : location.hash.startsWith('#/live') ? 310 : location.hash.startsWith('#/player') ? 306 : (TABS.find((t) => t.id === active) || TABS[0]).page}</span><span class="c">FUDBAL</span><span class="y clock">${clockText()}</span></div>
     <div class="titleband"><span class="dh">FUDBAL TEXT</span><span class="who"><span class="c hide-sm">${esc(me.name.toUpperCase())}</span>${me.is_admin ? ' <span class="m">ADMIN</span>' : me.admin_account ? ' <button class="linkbtn m" id="adminpin">[ADMIN]</button>' : ''} <a class="linkbtn newslink" id="newslink" href="#/news">[NEWS${S.newsUnread ? ` <span class="nb">${S.newsUnread}</span>` : ''}]</a> <button class="linkbtn" id="logout">[EXIT]</button></span></div>
   </header>
   <main id="view"></main>
@@ -119,6 +119,7 @@ async function route() {
     else if (page === 'live' && arg) await viewLive(Number(arg));
     else if (page === 'player' && arg) await viewProfile(Number(arg));
     else if (page === 'news') await viewNews();
+    else if (page === 'rate' && arg) await viewRate(Number(arg));
     else if (page === 'fixtures') await viewFixtures();
     else if (page === 'stats') await viewStats();
     else if (page === 'admin' && S.me.is_admin) await viewAdmin(arg || 'squad', arg2);
@@ -245,6 +246,7 @@ async function viewMatch(id) {
         ${m.goals.length || played ? `<div class="panel"><div class="panel-h">${played ? 'Result' : 'Goals'}<span class="spacer"></span>${played ? '<button class="btn sm" id="report">Share report</button>' : ''}</div><div class="panel-b">${m.goals.length ? scorersHtml(m) + goalTimeline(m) : '<span class="dim">No goals were recorded live.</span>'}${pointsHtml(m)}</div></div>` : ''}
         ${m.predictions ? predHtml(m) : ''}
         ${m.motm ? motmHtml(m) : ''}
+        ${m.ratings ? ratingsPanel(m) : ''}
         <div class="panel"><div class="panel-h">Teams</div><div class="panel-b">
           ${m.lineup_published ? `<div class="btn-row"><a class="btn" href="#/tactics/${m.id}">View line-up ›</a>
               ${m.status === 'played' ? `<a class="btn ghost" href="#/live/${m.id}">Edit goals</a>` : ''}</div>`
@@ -296,6 +298,63 @@ async function viewMatch(id) {
     if (S.me.is_admin) bindAlerts(v, m, () => render(m));
   };
   render(m);
+}
+
+// ---------- player ratings ----------
+function ratingsPanel(m) {
+  const R = m.ratings;
+  const closes = `${fmtShort(R.closes_at)} ${fmtTime(R.closes_at)}`;
+  if (R.open) {
+    const done = Object.keys(R.mine).length;
+    return `<div class="panel"><div class="panel-h" style="background:var(--ye);color:#000">⭐ Player ratings<span class="spacer"></span><span class="sub">${R.raters}/${R.eligible} rated</span></div><div class="panel-b">
+      ${R.can_rate ? `<a class="btn ${done < R.to_rate ? 'primary flash-soft' : 'ghost'}" href="#/rate/${m.id}" style="width:100%">${done ? `⭐ Your ratings: ${done}/${R.to_rate} — edit` : '⭐ Rate the players (1 min)'}</a>` : '<span class="muted">Only players who played can rate.</span>'}
+      <p class="dim" style="font-size:17px;margin:6px 0 0">Open until ${closes}. Averages are revealed when rating closes.</p></div></div>`;
+  }
+  if (!R.results.length) return '';
+  return `<div class="panel"><div class="panel-h" style="background:var(--ye);color:#000">⭐ Player ratings<span class="spacer"></span><span class="sub">${R.raters} raters</span></div><div class="panel-b rlist">
+    ${R.results.filter((r) => S.pmap[r.player_id]).map((r, i) => { const team = m.lineup.find((l) => l.player_id === r.player_id)?.team;
+      return `<div class="rrow"><span class="dim">${i + 1}</span><span class="chip-team ${team}"></span><a class="plink nm" href="#/player/${r.player_id}">${esc(shortName(S.pmap[r.player_id].name).toUpperCase())}</a>
+        <span class="rbar"><i style="width:${r.avg * 10}%" class="${ratingCls(r.avg)}"></i></span><b class="${ratingCls(r.avg)}">${r.avg.toFixed(1)}</b>${i === 0 ? ' <span class="y">★</span>' : ''}</div>`; }).join('')}
+  </div></div>`;
+}
+const ratingCls = (x) => (x >= 8 ? 'g' : x >= 6.5 ? 'y' : x >= 5 ? 'c' : 'r');
+
+async function viewRate(id) {
+  const v = mount('match');
+  await loadPlayers();
+  let m = (await api('GET', `/api/matches/${id}`)).match;
+  const R = m.ratings;
+  if (!R || !R.open || !R.can_rate) {
+    v.innerHTML = `<div class="panel"><div class="panel-h">Rate the players</div><div class="empty-state"><div class="ico">${!R ? 'NOT YET' : !R.open ? 'CLOSED' : 'PLAYERS ONLY'}</div>
+      <p>${!R ? 'Ratings open after full time.' : !R.open ? 'Rating for this match has closed.' : 'Only players who played in this match can rate.'}</p><a class="btn" href="#/match/${id}">‹ Match</a></div></div>`;
+    return;
+  }
+  const mine = { ...R.mine };
+  const { g, a } = goalTally(m);
+  const team = (t) => m.lineup.filter((l) => l.team === t && l.player_id !== S.me.id && S.pmap[l.player_id]).sort((x, y) => x.slot - y.slot);
+  const row = (l) => { const p = S.pmap[l.player_id], cur = mine[l.player_id];
+    return `<div class="rate-row" data-pid="${l.player_id}"><div class="rn"><span class="nm">${esc(p.name.toUpperCase())}</span>
+      <span class="rx">${l.slot === 0 ? '🧤' : ''}${'⚽'.repeat(g[l.player_id] || 0)}${a[l.player_id] ? ` <span class="c">${'A'.repeat(a[l.player_id])}</span>` : ''}</span><span class="rs ${cur ? ratingCls(cur) : 'dim'}">${cur ?? '–'}</span></div>
+      <div class="rbtns">${Array.from({ length: 10 }, (_, i) => i + 1).map((n) => `<button class="rb ${cur === n ? 'on' : ''}" data-s="${n}">${n}</button>`).join('')}</div></div>`; };
+  const draw = () => {
+    const done = Object.keys(mine).length;
+    v.innerHTML = `<div class="panel"><div class="panel-h" style="background:var(--ye);color:#000">⭐ Rate the players<span class="spacer"></span><span class="sub">${done}/${R.to_rate}</span></div>
+      <div class="panel-b"><div class="y" style="text-align:center;font-size:24px">${esc(m.team_a_name.toUpperCase())} ${m.score_a}-${m.score_b} ${esc(m.team_b_name.toUpperCase())}</div>
+      <p class="dim" style="font-size:17px;margin:4px 0 0;text-align:center">1 = awful · 5 = ok · 10 = legend. Anonymous — only averages are shown, after ${fmtShort(R.closes_at)} ${fmtTime(R.closes_at)}. Saved as you tap; tap again to clear.</p></div>
+      ${['A', 'B'].map((t) => `<div class="rteam ${t}">${esc((t === 'A' ? m.team_a_name : m.team_b_name).toUpperCase())}</div>${team(t).map(row).join('')}`).join('')}
+      <div class="btn-row" style="justify-content:space-between;margin-top:12px"><a class="btn ghost" href="#/match/${m.id}">‹ Match</a>
+        <a class="btn ${done >= R.to_rate ? 'primary' : ''}" href="#/match/${m.id}">${done >= R.to_rate ? '✓ Done' : `Done (${done}/${R.to_rate})`}</a></div></div>`;
+    $$('.rate-row', v).forEach((r) => $$('[data-s]', r).forEach((b) => (b.onclick = async () => {
+      const pid = Number(r.dataset.pid), n = Number(b.dataset.s);
+      const val = mine[pid] === n ? null : n;
+      const prev = mine[pid];
+      if (val == null) delete mine[pid]; else mine[pid] = val;
+      draw();
+      try { await api('POST', `/api/matches/${m.id}/ratings`, { scores: { [pid]: val } }); }
+      catch (e) { if (prev == null) delete mine[pid]; else mine[pid] = prev; draw(); fail(e); }
+    })));
+  };
+  draw();
 }
 
 // ---------- score predictions ----------
@@ -705,7 +764,7 @@ function shareReport(m) {
 async function viewProfile(id) {
   const v = mount('stats');
   await loadPlayers();
-  const { player: p, totals: t, games, ability_history: ah, badges = [], best_mates = [], worst_mate, nemesis, victim } = await api('GET', `/api/players/${id}/profile`);
+  const { player: p, totals: t, games, ability_history: ah, ratings: rt = {}, badges = [], best_mates = [], worst_mate, nemesis, victim } = await api('GET', `/api/players/${id}/profile`);
   const form = games.slice(0, 5);
   const chip = (r) => `<span class="res res-${r}">${r}</span>`;
   const tile = (n, l, cls = '') => `<div class="tile"><div class="n ${cls}">${n}</div><div class="l">${l}</div></div>`;
@@ -714,7 +773,7 @@ async function viewProfile(id) {
     <div class="panel-b">
       <div class="form-line"><span class="c">FORM</span> ${form.length ? form.map((g) => chip(g.result)).join('') : '<span class="dim">no games yet</span>'}</div>
       <div class="tiles">
-        ${tile(fmtPts(t.points), 'Points', 'y')}${tile(t.played ? fmtPts(t.ppg) : '–', 'Pts/game', 'g')}${tile(`<span class="${ablCls(p.rating)}">${p.rating}</span>`, 'Ability')}
+        ${tile(fmtPts(t.points), 'Points', 'y')}${tile(t.played ? fmtPts(t.ppg) : '–', 'Pts/game', 'g')}${tile(`<span class="${ablCls(p.rating)}">${p.rating}</span>`, 'Ability')}${tile(rt.avg != null ? `<span class="${ratingCls(rt.avg)}">${rt.avg.toFixed(1)}</span>` : '–', `Rating${rt.games ? ` (${rt.games})` : ''}`)}
         ${tile(t.played, 'Apps')}${tile(t.goals, 'Goals', 'y')}${tile(t.assists, 'Assists', 'c')}${tile(t.motm, 'MOTM ★', 'm')}
         ${tile(t.win_pct + '%', 'Win rate', 'g')}${tile(`${t.won}-${t.drawn}-${t.lost}`, 'W-D-L', 'wdl')}
         ${t.played ? tile(((t.goals) / t.played).toFixed(1), 'Goals/game', 'y') : ''}${p.is_guest ? '' : tile(t.signed_in, 'Sign-ups')}
@@ -739,7 +798,7 @@ async function viewProfile(id) {
     <div class="table-wrap"><table class="fm"><tbody>
     ${games.map((g) => `<tr class="click" data-m="${g.match_id}"><td>${chip(g.result)}</td><td>${fmtShort(g.starts_at)}</td>
       <td class="num y">${g.for}-${g.against}</td><td class="hide-sm dim">${esc(g.team_name)}${g.sub ? ' (sub)' : ''}</td>
-      <td>${'⚽'.repeat(g.goals)}${g.assists ? ` <span class="c">${'A'.repeat(g.assists)}</span>` : ''}${g.motm ? ' <span class="m">★</span>' : ''}${g.gk ? ' <span class="c">🧤</span>' : ''}</td><td class="num y">${g.pts > 0 ? '+' : ''}${fmtPts(g.pts)}</td></tr>`).join('')
+      <td>${'⚽'.repeat(g.goals)}${g.assists ? ` <span class="c">${'A'.repeat(g.assists)}</span>` : ''}${g.motm ? ' <span class="m">★</span>' : ''}${g.gk ? ' <span class="c">🧤</span>' : ''}</td><td class="num">${(() => { const r = (rt.last || []).find((x) => x.match_id === g.match_id); return r ? `<span class="${ratingCls(r.avg)}">${r.avg.toFixed(1)}</span>` : ''; })()}</td><td class="num y">${g.pts > 0 ? '+' : ''}${fmtPts(g.pts)}</td></tr>`).join('')
       || '<tr><td class="muted">No played matches yet.</td></tr>'}
     </tbody></table></div>
   </div>
@@ -770,6 +829,18 @@ function relHtml(best, worst, nemesis, victim) {
   return lines.join('') || '<p class="dim" style="margin:0">Needs at least 3 games with or against someone — keep playing!</p>';
 }
 
+// Generic "message these players one by one" modal
+function dmModal(list, keyPrefix, textFor) {
+  const draw = (rootM) => {
+    $('#nlist', rootM).innerHTML = list.map((p) => { const k = `${keyPrefix}-${p.id}`; const sent = wasSent(k); return `<div class="nrow">
+      <span class="nm">${esc(p.name)}</span>${p.phone && !String(p.phone).startsWith('guest:') ? `<button class="btn sm ${sent ? 'ghost' : 'primary'}" data-dm="${p.id}">${sent ? '✓ Sent' : '💬 Message'}</button>` : '<span class="dim">no number</span>'}</div>`; }).join('');
+    $$('[data-dm]', rootM).forEach((b) => (b.onclick = () => { const p = S.pmap[b.dataset.dm]; waOpen(textFor(p), p.phone); markSent(`${keyPrefix}-${p.id}`); draw(rootM); }));
+  };
+  modal(`Message ${list.length} player${list.length === 1 ? '' : 's'}`, `
+    <p class="muted" style="margin-top:0">Each button opens a private WhatsApp chat with the message ready — press send, then come back for the next one.</p>
+    <div id="nlist"></div><div class="btn-row" style="justify-content:flex-end;margin-top:10px"><button class="btn ghost" data-close>Done</button></div>`, (rootM) => draw(rootM));
+}
+
 // ---------- WhatsApp alerts (admin) ----------
 // WhatsApp doesn't allow a website to post into a group by itself, so the app writes the message
 // and one tap opens WhatsApp with it ready to send.
@@ -786,6 +857,11 @@ const markSent = (k) => { try { localStorage.setItem(sentKey(k), '1'); } catch {
 const firstName = (n) => n.trim().split(/\s+/)[0];
 
 function matchAlerts(m) {
+  if (m.status === 'played' && m.ratings?.open) {
+    const c = `${fmtShort(m.ratings.closes_at)} ${fmtTime(m.ratings.closes_at)}`;
+    return [{ key: `${m.id}-rate`, icon: '⭐', title: 'RATINGS OPEN', text:
+      `⭐ *Rate the players* from ${fmtShort(m.starts_at)} (${m.team_a_name} ${m.score_a}-${m.score_b} ${m.team_b_name}).\nTakes a minute, anonymous — open until ${c} 👉 ${location.origin}/#/rate/${m.id}` }];
+  }
   if (m.status !== 'upcoming') return [];
   const url = `${location.origin}/#/match/${m.id}`;
   const when = `${fmtShort(m.starts_at)} at ${fmtTime(m.starts_at)}`;
@@ -819,7 +895,8 @@ function noReply(m) {
 function alertsHtml(m) {
   const alerts = matchAlerts(m);
   const nr = m.status === 'upcoming' ? noReply(m) : [];
-  if (!alerts.length && !nr.length) return '';
+  const nrt = m.status === 'played' && m.ratings?.open ? m.ratings.not_rated.map((id) => S.pmap[id]).filter(Boolean) : [];
+  if (!alerts.length && !nr.length && !nrt.length) return '';
   return `<div class="panel alerts"><div class="panel-h" style="background:var(--gr);color:#000">📣 WhatsApp alerts<span class="spacer"></span><span class="sub">admins only</span></div><div class="panel-b">
     ${alerts.map((x) => { const sent = wasSent(x.key); return `<div class="alert ${sent ? 'sent' : 'new'}">
       <div class="ah"><span>${x.icon} ${esc(x.title)}</span>${sent ? '<span class="dim">✓ sent</span>' : '<span class="nb flash">NEW</span>'}</div>
@@ -828,6 +905,9 @@ function alertsHtml(m) {
     ${nr.length ? `<div class="alert"><div class="ah"><span>💬 ${nr.length} HAVEN'T REPLIED</span></div>
       <div class="dim" style="font-size:17px">${nr.map((p) => esc(p.name)).join(', ')}</div>
       <div class="btn-row" style="margin-top:6px"><button class="btn sm primary" id="nudge">💬 Message them one by one</button><button class="btn sm" id="nudgegroup">📋 Post list to group</button></div></div>` : ''}
+    ${nrt.length ? `<div class="alert"><div class="ah"><span>⭐ ${nrt.length} HAVEN'T RATED YET</span></div>
+      <div class="dim" style="font-size:17px">${nrt.map((p) => esc(p.name)).join(', ')}</div>
+      <div class="btn-row" style="margin-top:6px"><button class="btn sm primary" id="nudgerate">💬 Message them one by one</button></div></div>` : ''}
   </div></div>`;
 }
 function bindAlerts(root, m, rerender) {
@@ -840,6 +920,9 @@ function bindAlerts(root, m, rerender) {
   const ins = m.attendance.filter((a) => a.status === 'in' && !a.reserve).length;
   const ng = $('#nudgegroup', root);
   if (ng) ng.onclick = () => waOpen(`📋 *Football ${when}* — ${ins}/${m.capacity} in.\nStill waiting for: ${noReply(m).map((p) => p.name).join(', ')}\nIn or out? 👉 ${url}`);
+  const nr8 = $('#nudgerate', root);
+  if (nr8) nr8.onclick = () => dmModal(m.ratings.not_rated.map((id) => S.pmap[id]).filter(Boolean), `${m.id}-rdm`,
+    (p) => `Hey ${firstName(p.name)}! ⭐ Rate the players from ${fmtShort(m.starts_at)} (${m.team_a_name} ${m.score_a}-${m.score_b} ${m.team_b_name}) — takes a minute, anonymous 👉 ${location.origin}/#/rate/${m.id}`);
   const nb = $('#nudge', root);
   if (nb) nb.onclick = () => {
     const list = noReply(m);
@@ -1167,13 +1250,14 @@ async function viewStats() {
     ['name', 'Player', 0, 0, (r) => `<td class="name"><a class="plink" href="#/player/${r.id}">${esc(r.name)}</a></td>`],
     ['position', 'Pos', 0, 1, (r) => `<td class="hide-sm">${posBadge(r.position)}</td>`],
     ['rating', 'Abl', 1, 0, (r) => `<td class="num"><b class="${ablCls(r.rating)}">${r.rating}</b></td>`],
-    ['played', 'Apps', 1, 0, (r) => `<td class="num">${r.played}</td>`],
+    ['played', 'Apps', 1, 1, (r) => `<td class="num hide-sm">${r.played}</td>`],
     ['won', 'W', 1, 1, (r) => `<td class="num hide-sm">${r.won}</td>`],
     ['drawn', 'D', 1, 1, (r) => `<td class="num hide-sm">${r.drawn}</td>`],
     ['lost', 'L', 1, 1, (r) => `<td class="num hide-sm">${r.lost}</td>`],
     ['goals', 'G', 1, 0, (r) => `<td class="num y">${r.goals}</td>`],
     ['assists', 'A', 1, 0, (r) => `<td class="num c">${r.assists}</td>`],
-    ['motm', '★', 1, 0, (r) => `<td class="num m">${r.motm}</td>`],
+    ['motm', '★', 1, 1, (r) => `<td class="num m hide-sm">${r.motm}</td>`],
+    ['rtg', 'Rtg', 1, 0, (r) => `<td class="num ${r.rtg != null ? ratingCls(r.rtg) : 'dim'}">${r.rtg != null ? r.rtg.toFixed(1) : '–'}</td>`],
     ['pct', 'Win %', 1, 1, (r) => `<td class="num hide-sm">${r.played ? r.pct + '%' : '–'}</td>`],
     ['gd', 'GD', 1, 1, (r) => `<td class="num hide-sm">${r.gd > 0 ? '+' : ''}${r.gd}</td>`],
     ['ppg', 'P/G', 1, 1, (r) => `<td class="num hide-sm">${r.played ? fmtPts(r.ppg) : '–'}</td>`],
@@ -1206,7 +1290,7 @@ async function viewStats() {
           <span>Every ${R.gk_block_minutes} min without conceding</span><b class="g">+${R.gk_clean_block}</b>
           <span>Every goal conceded</span><b class="r">${R.gk_conceded}</b>
         </div>
-        <p class="dim" style="margin:8px 0 0;font-size:17px">Clean minutes are counted from ▶ Kick off to full time, only when goals were recorded live. Abl = ability (0–10). P/G = points per game. ★ = man-of-the-match wins.</p>
+        <p class="dim" style="margin:8px 0 0;font-size:17px">Clean minutes are counted from ▶ Kick off to full time, only when goals were recorded live. Abl = ability (0–10). Rtg = average team-mate rating (1–10). P/G = points per game. ★ = man-of-the-match wins.</p>
         ${S.me.is_admin ? '<a class="btn sm" href="#/admin/settings" style="margin-top:8px">Change rules</a>' : ''}
       </div></div>`;
     $$('th[data-k]', v).forEach((th) => (th.onclick = () => {
@@ -1265,9 +1349,16 @@ async function adminActivity(el) {
 
 async function adminSquad(el) {
   await loadPlayers();
+  let sugg = [];
+  try { sugg = (await api('GET', '/api/admin/ability-suggestions')).suggestions; } catch {}
   const all = [...S.players].sort((a, b) => b.active - a.active || a.name.localeCompare(b.name));
   const list = all.filter((p) => !p.is_guest), guests = all.filter((p) => p.is_guest);
   el.innerHTML = `
+  ${sugg.length ? `<div class="panel"><div class="panel-h" style="background:var(--ye);color:#000">⭐ Ability suggestions<span class="spacer"></span><span class="sub">from team-mate ratings</span></div><div class="panel-b">
+    ${sugg.map((x) => `<div class="sug"><span class="nm">${esc(x.name.toUpperCase())}</span><span class="dim">rated ${x.avg.toFixed(1)} (${x.games} games)</span>
+      <span><span class="${ablCls(x.rating)}">${x.rating}</span> → <b class="${ablCls(x.suggest)}">${x.suggest}</b> <span class="${x.suggest > x.rating ? 'g' : 'r'}">${x.suggest > x.rating ? '▲' : '▼'}</span></span>
+      <button class="btn sm primary" data-apply="${x.id}" data-to="${x.suggest}" data-avg="${x.avg}">Apply</button></div>`).join('')}
+    <p class="dim" style="font-size:17px;margin:6px 0 0">Based on the last 10 rated games (min 3). Apply = set the new ability and announce it in the news.</p></div></div>` : ''}
   <div class="panel"><div class="panel-h">Squad<span class="spacer"></span><span class="sub">${list.filter((p) => p.active).length} active</span>
     <button class="btn sm primary" id="add">+ Add player</button><button class="btn sm" id="bulk">Bulk add</button></div>
     <div class="table-wrap"><table class="fm"><thead><tr><th>Name</th><th class="hide-sm">Phone</th><th>Pos</th><th class="hide-sm">Ability</th><th class="hide-sm"></th></tr></thead><tbody>
@@ -1278,6 +1369,12 @@ async function adminSquad(el) {
     </tbody></table></div>
     <div class="panel-b muted" style="font-size:18px">Only phone numbers on this list can log in. Ability drives Auto-balance. Tap a guest to rename them, or add their number to make them a member.</div>
   </div>`;
+  $$('[data-apply]', el).forEach((b) => (b.onclick = async () => {
+    const p = S.pmap[b.dataset.apply], to = Number(b.dataset.to);
+    if (!confirm(`Set ${p.name}'s ability ${p.rating} → ${to} and announce it in the news?`)) return;
+    try { await api('PUT', `/api/players/${p.id}`, { rating: to, announce: true, note: `Team-mates rate ${firstName(p.name)} ${Number(b.dataset.avg).toFixed(1)} on average` }); toast('Ability updated'); adminSquad(el); }
+    catch (e) { fail(e); }
+  }));
   $('#add').onclick = () => playerForm(null, () => adminSquad(el));
   $('#bulk').onclick = () => bulkForm(() => adminSquad(el));
   $$('tr[data-id]', el).forEach((tr) => (tr.onclick = () => playerForm(S.pmap[tr.dataset.id], () => adminSquad(el))));

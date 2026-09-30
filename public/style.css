@@ -422,3 +422,27 @@ table.fm td.pts b { font-weight: normal; color: var(--ye); }
 .livestrip { display: flex; align-items: center; gap: 8px; background: var(--re); color: var(--wh); text-decoration: none; padding: 6px 10px; margin-bottom: 12px; font-size: 22px; }
 .livestrip b { font-weight: normal; color: var(--ye); flex: 1; min-width: 0; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center; }
 .livestrip > span { flex: none; white-space: nowrap; }
+
+/* ---------- player ratings ---------- */
+.flash-soft { animation: flashbg 1.2s steps(1) infinite; }
+.rteam { margin-top: 12px; padding: 2px 8px; font-size: 22px; }
+.rteam.A { background: var(--wh); color: var(--bk); } .rteam.B { background: var(--re); color: var(--wh); }
+.rate-row { padding: 6px 2px 8px; border-bottom: 1px dotted #223; }
+.rate-row .rn { display: flex; align-items: baseline; gap: 8px; }
+.rate-row .rn .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rate-row .rn .rx { font-size: 17px; flex: none; }
+.rate-row .rn .rs { font-size: 28px; min-width: 30px; text-align: right; flex: none; }
+.rbtns { display: grid; grid-template-columns: repeat(10, 1fr); gap: 3px; margin-top: 4px; }
+.rb { min-height: 38px; border: 0; background: #111; color: var(--cy); font-size: 22px; cursor: pointer; box-shadow: inset 0 0 0 2px #334; padding: 0; }
+.rb:nth-child(-n+4) { color: var(--re); } .rb:nth-child(n+8) { color: var(--gr); }
+.rb.on { background: var(--ye); color: var(--bk) !important; box-shadow: none; }
+.rlist .rrow { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
+.rlist .rrow .nm { width: 38%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rlist .rbar { flex: 1; height: 12px; background: #111; }
+.rlist .rbar i { display: block; height: 100%; background: currentColor; }
+.rlist b { font-weight: normal; min-width: 30px; text-align: right; }
+.sug { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; padding: 4px 0; border-bottom: 1px dotted #223; }
+.sug .nm { flex: 1 1 100%; }
+.sug b { font-weight: normal; }
+@media (max-width: 380px) { table.fm.stats { font-size: 17px; } table.fm.stats td, table.fm.stats th { padding: 3px 2px; } }
+.rlist .rrow > .dim:first-child { width: 22px; text-align: right; flex: none; }
