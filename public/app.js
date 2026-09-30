@@ -114,7 +114,7 @@ async function route() {
   if (!S.me) return renderLogin();
   const [, page = 'match', arg, arg2] = (location.hash || '#/match').split('/');
   try {
-    if (page === 'match') await viewMatch(arg ? Number(arg) : null);
+    if (page === 'match') await viewMatch(arg ? Number(arg) : null, arg2);
     else if (page === 'tactics') await viewTactics(arg ? Number(arg) : null);
     else if (page === 'live' && arg) await viewLive(Number(arg));
     else if (page === 'player' && arg) await viewProfile(Number(arg));
@@ -205,12 +205,14 @@ function squadRows(m) {
   ${none.length ? div('No reply', none.length) + none.map((p) => row(p.id, 'none')).join('') : ''}`;
 }
 
-async function viewMatch(id) {
+async function viewMatch(id, focus) {
   const v = mount('match');
-  await Promise.all([loadPlayers(), loadMatches()]);
+  const isHome = !id;
+  let todo = [];
+  await Promise.all([loadPlayers(), loadMatches(), isHome ? api('GET', '/api/todo').then((r) => (todo = r.items)).catch(() => {}) : null]);
   id = id || S.nextId;
   if (!id) {
-    v.innerHTML = `<div class="panel"><div class="panel-h">Next Match</div><div class="empty-state"><div class="ico">NO MATCH</div>
+    v.innerHTML = `${todoHtml(todo)}<div class="panel"><div class="panel-h">Next Match</div><div class="empty-state"><div class="ico">NO MATCH</div>
       <p>No match scheduled yet.</p>${S.me.is_admin ? '<a class="btn primary" href="#/admin/matches/new">Schedule a match</a>' : '<p>Ask an admin to create one.</p>'}</div></div>`;
     return;
   }
@@ -222,6 +224,7 @@ async function viewMatch(id) {
     const recent = (S.news || []).filter((n) => n.pinned || Date.now() - new Date(n.created_at) < 14 * 864e5).slice(0, 3);
     const liveNow = m.status === 'upcoming' && m.clock_started;
     v.innerHTML = `
+    ${isHome ? todoHtml(todo.filter((t) => !(t.type === 'predict' && t.match_id === m.id && m.predictions?.mine))) : ''}
     ${liveNow ? `<a class="livestrip" href="#/live/${m.id}"><span><span class="flash">●</span> LIVE</span> <b><span class="chip-team A"></span> ${m.score_a ?? 0}-${m.score_b ?? 0} <span class="chip-team B" style="outline:1px solid #fff"></span></b> <span>WATCH ›</span></a>` : ''}
     ${S.me.is_admin ? alertsHtml(m) : ''}
     ${recent.length ? `<div class="panel newsstrip"><div class="panel-h"><span>News</span>${S.newsUnread ? `<span class="nb flash">${S.newsUnread} NEW</span>` : ''}<span class="spacer"></span><a class="btn sm" href="#/news">All news ›</a></div>
@@ -296,8 +299,25 @@ async function viewMatch(id) {
     const sh = $('#share', v);
     if (sh) sh.onclick = () => shareMatch(m);
     if (S.me.is_admin) bindAlerts(v, m, () => render(m));
+    if (focus) { const t = document.getElementById(focus); if (t) { t.scrollIntoView({ block: 'start' }); t.classList.add('focus'); } focus = null; }
   };
   render(m);
+}
+
+// ---------- personal to-do on the main page ----------
+function todoHtml(items) {
+  if (!items || !items.length) return '';
+  const left = (iso) => { const h = (Date.parse(iso) - Date.now()) / 3.6e6; return h < 1 ? 'closes soon' : h < 24 ? `${Math.round(h)}h left` : `until ${fmtShort(iso)} ${fmtTime(iso)}`; };
+  const row = (t) => {
+    if (t.type === 'motm') return `<a class="todo-item m" href="#/match/${t.match_id}/motm"><span class="ti">★</span><span class="tt"><b>VOTE MAN OF THE MATCH</b>
+      <span class="dim">${esc(t.label)} · ${left(t.closes_at)}</span></span><span class="go">›</span></a>`;
+    if (t.type === 'rate') return `<a class="todo-item y" href="#/rate/${t.match_id}"><span class="ti">⭐</span><span class="tt"><b>RATE THE PLAYERS${t.done ? ` (${t.done}/${t.total})` : ''}</b>
+      <span class="dim">${esc(t.label)} · ${left(t.closes_at)}</span></span><span class="go">›</span></a>`;
+    return `<a class="todo-item c" href="#/match/${t.match_id}/predict"><span class="ti">🔮</span><span class="tt"><b>PREDICT THE SCORE</b>
+      <span class="dim">${fmtShort(t.starts_at)} ${fmtTime(t.starts_at)} · ${t.count} guess${t.count === 1 ? '' : 'es'} so far</span></span><span class="go">›</span></a>`;
+  };
+  return `<div class="panel todo"><div class="panel-h" style="background:var(--ye);color:#000">📋 Your to-do<span class="spacer"></span><span class="nb flash">${items.length}</span></div>
+    <div class="panel-b">${items.map(row).join('')}</div></div>`;
 }
 
 // ---------- player ratings ----------
@@ -364,7 +384,7 @@ function predHtml(m) {
   const A = esc(m.team_a_name.toUpperCase()), B = esc(m.team_b_name.toUpperCase());
   if (!P.locked) {
     const a = P.mine ? P.mine.a : 0, b = P.mine ? P.mine.b : 0;
-    return `<div class="panel"><div class="panel-h" style="background:var(--cy);color:#000">🔮 Predict the score<span class="spacer"></span><span class="sub">${P.count} guess${P.count === 1 ? '' : 'es'}</span></div>
+    return `<div class="panel" id="predict"><div class="panel-h" style="background:var(--cy);color:#000">🔮 Predict the score<span class="spacer"></span><span class="sub">${P.count} guess${P.count === 1 ? '' : 'es'}</span></div>
       <div class="panel-b"><div class="pred" id="predf" data-a="${a}" data-b="${b}">
         <div class="pside"><div class="pt A">${A}</div><div class="pstep"><button class="btn sm" data-step="a:-1">−</button><span class="pn" id="pa">${a}</span><button class="btn sm" data-step="a:1">+</button></div></div>
         <div class="pdash">-</div>
@@ -457,7 +477,7 @@ function motmHtml(m) {
       <div class="motm-win flash-once">${mo.winners.map((w) => esc((S.pmap[w]?.name || '?').toUpperCase())).join(' &amp; ')}</div>
       <table class="fm"><tbody>${ranked.map(([pid, n]) => `<tr><td class="name">${esc(S.pmap[pid]?.name || '?')}</td><td class="num y">${n} vote${n > 1 ? 's' : ''}</td></tr>`).join('')}</tbody></table></div></div>`;
   }
-  return `<div class="panel"><div class="panel-h" style="background:var(--ma);color:#fff">★ Vote: man of the match</div><div class="panel-b">
+  return `<div class="panel" id="motm"><div class="panel-h" style="background:var(--ma);color:#fff">★ Vote: man of the match</div><div class="panel-b">
     <p class="muted" style="margin-top:0">${mo.can_vote ? 'You played — pick one (not yourself).' : 'Only players who played can vote.'}
     Closes ${DAYS[closes.getDay()]} ${fmtTime(closes.toISOString())}. <span class="y">${mo.votes}/${mo.voters} voted</span></p>
     ${mo.can_vote ? played.filter((pid) => pid !== S.me.id && S.pmap[pid]).map((pid) =>

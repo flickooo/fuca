@@ -791,6 +791,27 @@ route('GET', '/api/admin/ability-suggestions', (req, res, { user }) => {
   send(res, 200, { suggestions: out.sort((a, b) => Math.abs(b.suggest - b.rating) - Math.abs(a.suggest - a.rating)) });
 });
 
+// Personal to-do list for the main page: things waiting for this player
+route('GET', '/api/todo', (req, res, { user }) => {
+  const items = [];
+  const since = new Date(Date.now() - (RATE_HOURS + 24) * 3600e3).toISOString();
+  for (const m of db.prepare(`SELECT * FROM matches WHERE status='played' AND COALESCE(ended_at, starts_at) >= ? ORDER BY starts_at DESC`).all(since)) {
+    const label = `${m.team_a_name} ${m.score_a ?? 0}-${m.score_b ?? 0} ${m.team_b_name}`;
+    const mo = motmInfo(m, user);
+    if (mo && mo.open && mo.can_vote && !mo.my_vote) items.push({ type: 'motm', match_id: m.id, starts_at: m.starts_at, label, closes_at: mo.closes_at });
+    const r = ratingInfo(m, user);
+    if (r && r.open && r.can_rate) {
+      const done = Object.keys(r.mine).length;
+      if (done < r.to_rate) items.push({ type: 'rate', match_id: m.id, starts_at: m.starts_at, label, closes_at: r.closes_at, done, total: r.to_rate });
+    }
+  }
+  for (const m of db.prepare(`SELECT * FROM matches WHERE status='upcoming' ORDER BY starts_at LIMIT 2`).all()) {
+    const p = predInfo(m, user);
+    if (p && !p.locked && !p.mine) items.push({ type: 'predict', match_id: m.id, starts_at: m.starts_at, closes_at: new Date(Date.parse(m.starts_at)).toISOString(), count: p.count });
+  }
+  send(res, 200, { items });
+});
+
 route('POST', '/api/matches/:id/motm', (req, res, { user, body, params }) => {
   const m = db.prepare('SELECT * FROM matches WHERE id=?').get(Number(params.id));
   if (!m) throw new HttpError(404, 'Match not found');

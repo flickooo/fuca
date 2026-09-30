@@ -446,3 +446,18 @@ table.fm td.pts b { font-weight: normal; color: var(--ye); }
 .sug b { font-weight: normal; }
 @media (max-width: 380px) { table.fm.stats { font-size: 17px; } table.fm.stats td, table.fm.stats th { padding: 3px 2px; } }
 .rlist .rrow > .dim:first-child { width: 22px; text-align: right; flex: none; }
+
+/* ---------- personal to-do (main page) ---------- */
+.todo .panel-b { padding: 4px 0; }
+.todo-item { display: flex; align-items: center; gap: 10px; padding: 8px 8px; text-decoration: none; color: var(--wh); border-bottom: 1px dotted #223; }
+.todo-item:last-child { border-bottom: 0; }
+.todo-item .ti { font-size: 30px; width: 36px; text-align: center; flex: none; }
+.todo-item .tt { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.todo-item .tt b { font-weight: normal; font-size: 23px; }
+.todo-item.m .tt b { color: var(--ma); } .todo-item.y .tt b { color: var(--ye); } .todo-item.c .tt b { color: var(--cy); }
+.todo-item .tt .dim { font-size: 17px; }
+.todo-item .go { font-size: 34px; color: var(--ye); flex: none; }
+.todo-item:hover { background: #0a0a2a; }
+.panel.focus { animation: focusflash .6s steps(1) 3; }
+@keyframes focusflash { 50% { box-shadow: 0 0 0 3px var(--ye); } }
+#motm, #predict { scroll-margin-top: 110px; }
