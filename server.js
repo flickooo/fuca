@@ -129,6 +129,7 @@ CREATE TABLE IF NOT EXISTS late_drops (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS news_ukey ON news(ukey) WHERE ukey IS NOT NULL;`);
 addCol('players', 'is_guest', 'INTEGER NOT NULL DEFAULT 0');
+addCol('players', 'is_spectator', 'INTEGER NOT NULL DEFAULT 0');
 addCol('sessions', 'elevated', 'INTEGER NOT NULL DEFAULT 0');
 addCol('attendance', 'invited_by', 'INTEGER');
 
@@ -287,7 +288,7 @@ const limited = (ip) => {
 
 // ---------- domain ----------
 const pubPlayer = (p, admin) => ({
-  id: p.id, name: p.name, position: p.position, rating: p.rating, is_admin: !!p.is_admin, active: !!p.active, is_guest: !!p.is_guest,
+  id: p.id, name: p.name, position: p.position, rating: p.rating, is_admin: !!p.is_admin, active: !!p.active, is_guest: !!p.is_guest, is_spectator: !!p.is_spectator,
   ...(admin && !p.is_guest ? { phone: p.phone } : {}),
   ...(admin ? { has_pin: !!p.pin_hash } : {}),
 });
@@ -448,9 +449,10 @@ const playerFields = (b, existing = {}) => {
   const rating = int(b.rating ?? existing.rating ?? 5, 'Ability', 0, 10);
   const is_admin = (b.is_admin ?? !!existing.is_admin) ? 1 : 0;
   const active = (b.active ?? (existing.active ?? 1)) ? 1 : 0;
+  const is_spectator = (b.is_spectator ?? !!existing.is_spectator) ? 1 : 0;
   const pin = b.pin == null ? '' : String(b.pin).trim();
   if (pin && !/^\d{4,8}$/.test(pin)) bad('Admin PIN must be 4–8 digits');
-  return { name, phone, position, rating, is_admin, active, pin };
+  return { name, phone, position, rating, is_admin, active, pin, is_spectator };
 };
 const phoneTaken = (phone, exceptId = 0) =>
   db.prepare('SELECT id, phone FROM players WHERE id<>?').all(exceptId).some((p) => phoneKey(p.phone) === phoneKey(phone));
@@ -459,8 +461,8 @@ route('POST', '/api/players', (req, res, { user, body }) => {
   requireAdmin(user);
   const f = playerFields(body);
   if (phoneTaken(f.phone)) bad('A player with this phone number already exists');
-  const r = db.prepare('INSERT INTO players(name,phone,position,rating,is_admin,active,pin_hash) VALUES(?,?,?,?,?,?,?)')
-    .run(f.name, f.phone, f.position, f.rating, f.is_admin, f.active, f.pin ? hashPw(f.pin) : null);
+  const r = db.prepare('INSERT INTO players(name,phone,position,rating,is_admin,active,pin_hash,is_spectator) VALUES(?,?,?,?,?,?,?,?)')
+    .run(f.name, f.phone, f.position, f.rating, f.is_admin, f.active, f.pin ? hashPw(f.pin) : null, f.is_spectator);
   send(res, 201, { id: Number(r.lastInsertRowid) });
 });
 
@@ -485,8 +487,13 @@ route('PUT', '/api/players/:id', (req, res, { user, body, params }) => {
   const f = playerFields(body, wasGuest ? { ...ex, phone: '' } : ex);
   if (phoneTaken(f.phone, ex.id)) bad('A player with this phone number already exists');
   if (ex.id === user.id && (!f.is_admin || !f.active)) bad("You can't remove your own admin rights or deactivate yourself");
-  db.prepare('UPDATE players SET name=?, phone=?, position=?, rating=?, is_admin=?, active=?, is_guest=0 WHERE id=?')
-    .run(f.name, f.phone, f.position, f.rating, f.is_admin, f.active, ex.id);
+  db.prepare('UPDATE players SET name=?, phone=?, position=?, rating=?, is_admin=?, active=?, is_guest=0, is_spectator=? WHERE id=?')
+    .run(f.name, f.phone, f.position, f.rating, f.is_admin, f.active, f.is_spectator, ex.id);
+  // a spectator never plays: take them off any upcoming sign-up lists
+  if (f.is_spectator && !ex.is_spectator) {
+    db.prepare(`DELETE FROM attendance WHERE player_id=? AND match_id IN (SELECT id FROM matches WHERE status='upcoming')`).run(ex.id);
+    db.prepare(`DELETE FROM lineups WHERE player_id=? AND match_id IN (SELECT id FROM matches WHERE status='upcoming')`).run(ex.id);
+  }
   if (f.pin) {
     db.prepare('UPDATE players SET pin_hash=? WHERE id=?').run(hashPw(f.pin), ex.id);
     if (ex.id !== user.id) db.prepare('DELETE FROM sessions WHERE player_id=?').run(ex.id);
@@ -568,6 +575,7 @@ route('POST', '/api/matches/:id/attendance', (req, res, { user, body, params }) 
   let pid = user.id;
   if (body.player_id != null && Number(body.player_id) !== user.id) { requireAdmin(user); pid = Number(body.player_id); }
   if (m.status !== 'upcoming' && !user.is_admin) bad('This match is closed');
+  if (db.prepare('SELECT is_spectator FROM players WHERE id=?').get(pid)?.is_spectator && body.status === 'in') bad("Spectators don't sign up to play — ask an admin to make you a player");
   const status = body.status;
   // Dropping out less than 24h before kick-off is remembered (for the "Late dropper" badge). Re-joining clears it.
   const prev = db.prepare('SELECT status FROM attendance WHERE match_id=? AND player_id=?').get(m.id, pid);
@@ -782,7 +790,7 @@ route('GET', '/api/admin/ability-suggestions', (req, res, { user }) => {
   requireAdmin(user);
   const hist = ratingHistory();
   const out = [];
-  for (const p of db.prepare('SELECT * FROM players WHERE active=1').all()) {
+  for (const p of db.prepare('SELECT * FROM players WHERE active=1 AND is_spectator=0').all()) {
     const recent = (hist[p.id] || []).slice(0, 10);
     if (recent.length < 3) continue;           // need at least 3 rated games
     const avg = avgOf(recent), suggest = Math.max(0, Math.min(10, Math.round(avg)));
@@ -834,6 +842,7 @@ route('GET', '/api/guests', (req, res) => {
   send(res, 200, { guests: rows.map((g) => ({ ...pubPlayer(g, false), games: g.games })) });
 });
 route('POST', '/api/matches/:id/guests', (req, res, { user, body, params }) => {
+  if (user.is_spectator && !user.is_admin) bad('Only players can bring guests');
   const m = db.prepare('SELECT * FROM matches WHERE id=?').get(Number(params.id));
   if (!m) throw new HttpError(404, 'Match not found');
   if (m.status !== 'upcoming' && !user.is_admin) bad('This match is closed');
@@ -904,7 +913,7 @@ route('GET', '/api/players/:id/profile', (req, res, { user, params }) => {
   const signups = db.prepare(`SELECT SUM(a.status='in') AS ins, SUM(a.status='out') AS outs FROM attendance a JOIN matches m ON m.id=a.match_id
     WHERE a.player_id=? AND m.status<>'cancelled'`).get(p.id);
   const hist = buildHistory();
-  const badges = p.is_guest ? [] : playerBadges(p.id, hist);
+  const badges = p.is_guest || p.is_spectator ? [] : playerBadges(p.id, hist);
   const rel = relations(p.id, hist);
   const ability_history = db.prepare(`SELECT old_val, new_val, body, created_at FROM news WHERE kind='ability' AND player_id=? ORDER BY id DESC LIMIT 10`).all(p.id);
   const myRatings = ratingHistory()[p.id] || [];
@@ -1217,10 +1226,10 @@ route('GET', '/api/admin/activity', (req, res, { user }) => {
   requireAdmin(user);
   const sess = {};
   for (const x of db.prepare('SELECT player_id, user_agent, last_seen_at, created_at FROM sessions').all()) (sess[x.player_id] ||= []).push(x);
-  const rows = db.prepare('SELECT id, name, active, is_admin, last_login_at, last_seen_at FROM players WHERE is_guest=0').all().map((p) => {
+  const rows = db.prepare('SELECT id, name, active, is_admin, is_spectator, last_login_at, last_seen_at FROM players WHERE is_guest=0').all().map((p) => {
     const ss = sess[p.id] || [];
     const logins = ss.map((x) => x.created_at && x.created_at.replace(' ', 'T') + (x.created_at.endsWith('Z') ? '' : 'Z')).filter(Boolean).sort();
-    return { ...p, active: !!p.active, is_admin: !!p.is_admin,
+    return { ...p, active: !!p.active, is_admin: !!p.is_admin, is_spectator: !!p.is_spectator,
       // players logged in before tracking existed: fall back to their newest session
       last_login_at: p.last_login_at || logins[logins.length - 1] || null,
       devices: [...new Set(ss.map((x) => deviceOf(x.user_agent)).filter(Boolean))], sessions: ss.length };
@@ -1249,7 +1258,7 @@ route('GET', '/api/stats', (req, res) => {
     FROM players p
     LEFT JOIN (SELECT l.player_id, l.team, m.id AS mid, m.score_a AS sa, m.score_b AS sb FROM lineups l JOIN matches m ON m.id=l.match_id
       WHERE m.status='played' AND m.score_a IS NOT NULL AND m.score_b IS NOT NULL) x ON x.player_id=p.id
-    WHERE p.active=1 AND p.is_guest=0
+    WHERE p.active=1 AND p.is_guest=0 AND p.is_spectator=0
     GROUP BY p.id`).all();
   const signups = db.prepare(`SELECT a.player_id, SUM(a.status='in') AS ins, SUM(a.status='out') AS outs FROM attendance a
     JOIN matches m ON m.id=a.match_id WHERE m.status<>'cancelled' GROUP BY a.player_id`).all();

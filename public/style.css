@@ -461,3 +461,7 @@ table.fm td.pts b { font-weight: normal; color: var(--ye); }
 .panel.focus { animation: focusflash .6s steps(1) 3; }
 @keyframes focusflash { 50% { box-shadow: 0 0 0 3px var(--ye); } }
 #motm, #predict { scroll-margin-top: 110px; }
+
+/* ---------- spectators ---------- */
+.tag.spec { background: var(--cy); color: var(--bk); padding: 0 4px; font-size: 17px; }
+.specnote { margin: 12px 0 4px; padding: 8px; text-align: center; box-shadow: inset 0 0 0 2px var(--cy); }

@@ -84,7 +84,7 @@ function shell(active) {
   return `
   <header class="topbar">
     <div class="pageline"><span class="w">P${location.hash.startsWith('#/news') ? 101 : location.hash.startsWith('#/rate') ? 312 : location.hash.startsWith('#/live') ? 310 : location.hash.startsWith('#/player') ? 306 : (TABS.find((t) => t.id === active) || TABS[0]).page}</span><span class="c">FUDBAL</span><span class="y clock">${clockText()}</span></div>
-    <div class="titleband"><span class="dh">FUDBAL TEXT</span><span class="who"><span class="c hide-sm">${esc(me.name.toUpperCase())}</span>${me.is_admin ? ' <span class="m">ADMIN</span>' : me.admin_account ? ' <button class="linkbtn m" id="adminpin">[ADMIN]</button>' : ''} <a class="linkbtn newslink" id="newslink" href="#/news">[NEWS${S.newsUnread ? ` <span class="nb">${S.newsUnread}</span>` : ''}]</a> <button class="linkbtn" id="logout">[EXIT]</button></span></div>
+    <div class="titleband"><span class="dh">FUDBAL TEXT</span><span class="who"><span class="c hide-sm">${esc(me.name.toUpperCase())}</span>${me.is_spectator ? ' <span class="c">👀</span>' : ''}${me.is_admin ? ' <span class="m">ADMIN</span>' : me.admin_account ? ' <button class="linkbtn m" id="adminpin">[ADMIN]</button>' : ''} <a class="linkbtn newslink" id="newslink" href="#/news">[NEWS${S.newsUnread ? ` <span class="nb">${S.newsUnread}</span>` : ''}]</a> <button class="linkbtn" id="logout">[EXIT]</button></span></div>
   </header>
   <main id="view"></main>
   <nav class="tabs fastext">${TABS.filter((t) => !t.admin || me.is_admin).map((t) =>
@@ -183,7 +183,7 @@ function squadRows(m) {
   const ins = m.attendance.filter((a) => a.status === 'in' && !a.reserve);
   const res = m.attendance.filter((a) => a.reserve);
   const outs = m.attendance.filter((a) => a.status === 'out');
-  const none = S.players.filter((p) => p.active && !p.is_guest && !byPid[p.id]);
+  const none = S.players.filter((p) => p.active && !p.is_guest && !p.is_spectator && !byPid[p.id]);
   const admin = S.me.is_admin;
   const row = (pid, st, i) => {
     const p = S.pmap[pid]; if (!p) return '';
@@ -236,7 +236,8 @@ async function viewMatch(id, focus) {
           <div class="panel-b">
             ${fixtureHeader(m)}
             ${played ? `<div class="scoreline">${esc(m.team_a_name)} ${m.score_a} – ${m.score_b} ${esc(m.team_b_name)}<small>Full time</small></div>` : ''}
-            ${open ? `
+            ${open && S.me.is_spectator ? `<div class="specnote">👀 <b class="c">YOU'RE A SPECTATOR</b><br>Follow the game and keep the score: the <b class="g">LIVE SCORE</b> opens on the <b class="g">TEAMS</b> page 30 min before kick-off.</div>` : ''}
+            ${open && !S.me.is_spectator ? `
               <div class="big-choice">
                 <button class="btn in ${m.my_status === 'in' ? 'chosen' : m.my_status ? 'idle' : ''}" data-st="in">IN</button>
                 <button class="btn out ${m.my_status === 'out' ? 'chosen' : m.my_status ? 'idle' : ''}" data-st="out">OUT</button>
@@ -257,7 +258,7 @@ async function viewMatch(id, focus) {
             : '<p class="muted">The manager hasn\'t announced the teams yet.</p>'}
         </div></div>
       </div>
-      <div class="panel"><div class="panel-h">Squad<span class="spacer"></span>${open || S.me.is_admin ? '<button class="btn sm" id="addguest">+ Guest</button>' : ''}<span class="sub">${S.me.is_admin && m.attendance.some((a) => a.status === 'in')
+      <div class="panel"><div class="panel-h">Squad<span class="spacer"></span>${(open && !S.me.is_spectator) || S.me.is_admin ? '<button class="btn sm" id="addguest">+ Guest</button>' : ''}<span class="sub">${S.me.is_admin && m.attendance.some((a) => a.status === 'in')
           ? `${m.attendance.filter((a) => a.status === 'in' && a.paid).length}/${m.attendance.filter((a) => a.status === 'in').length} paid` : 'first come, first served'}</span></div>
         <div class="table-wrap"><table class="fm"><thead><tr><th class="num">#</th><th></th><th>Name</th><th class="hide-sm">Pos</th><th class="hide-sm">Ability</th><th>Paid</th><th></th></tr></thead>
         <tbody>${squadRows(m)}</tbody></table></div>
@@ -789,7 +790,7 @@ async function viewProfile(id) {
   const chip = (r) => `<span class="res res-${r}">${r}</span>`;
   const tile = (n, l, cls = '') => `<div class="tile"><div class="n ${cls}">${n}</div><div class="l">${l}</div></div>`;
   v.innerHTML = `
-  <div class="panel"><div class="panel-h">${esc(p.name)}${p.is_guest ? ' <span class="tag guest" style="color:#000">GUEST</span>' : ''}<span class="spacer"></span><span class="sub">${esc(p.position)}</span></div>
+  <div class="panel"><div class="panel-h">${esc(p.name)}${p.is_guest ? ' <span class="tag guest" style="color:#000">GUEST</span>' : ''}${p.is_spectator ? ' <span class="tag spec">👀 SPECTATOR</span>' : ''}<span class="spacer"></span><span class="sub">${esc(p.position)}</span></div>
     <div class="panel-b">
       <div class="form-line"><span class="c">FORM</span> ${form.length ? form.map((g) => chip(g.result)).join('') : '<span class="dim">no games yet</span>'}</div>
       <div class="tiles">
@@ -811,7 +812,7 @@ async function viewProfile(id) {
   <div class="panel"><div class="panel-h" style="background:var(--gr);color:#000">Partners &amp; rivals</div><div class="panel-b">
     ${relHtml(best_mates, worst_mate, nemesis, victim)}
     <div class="c" style="margin-top:10px">HEAD-TO-HEAD</div>
-    <div class="btn-row"><select id="h2hsel" style="max-width:260px"><option value="">Compare with…</option>${S.players.filter((x) => x.active && x.id !== p.id && !x.is_guest).map((x) => `<option value="${x.id}">${esc(x.name)}</option>`).join('')}</select></div>
+    <div class="btn-row"><select id="h2hsel" style="max-width:260px"><option value="">Compare with…</option>${S.players.filter((x) => x.active && x.id !== p.id && !x.is_guest && !x.is_spectator).map((x) => `<option value="${x.id}">${esc(x.name)}</option>`).join('')}</select></div>
     <div id="h2hout"></div>
   </div></div>
   <div class="panel"><div class="panel-h" style="background:var(--re);color:#fff">Recent matches</div>
@@ -910,7 +911,7 @@ function matchAlerts(m) {
 }
 function noReply(m) {
   const replied = new Set(m.attendance.map((a) => a.player_id));
-  return S.players.filter((p) => p.active && !p.is_guest && !replied.has(p.id));
+  return S.players.filter((p) => p.active && !p.is_guest && !p.is_spectator && !replied.has(p.id));
 }
 function alertsHtml(m) {
   const alerts = matchAlerts(m);
@@ -1351,7 +1352,7 @@ async function adminActivity(el) {
   el.innerHTML = `
   <div class="panel"><div class="panel-h">Activity<span class="spacer"></span><span class="sub">${week}/${list.length} active this week</span></div>
     <div class="table-wrap"><table class="fm"><thead><tr><th>Player</th><th>Last seen</th><th class="hide-sm">Last login</th><th class="hide-sm">Device</th><th></th></tr></thead><tbody>
-    ${list.map((p) => `<tr><td class="name"><a class="plink" href="#/player/${p.id}">${esc(p.name)}</a>${p.is_admin ? ' <span class="tag admin">A</span>' : ''}
+    ${list.map((p) => `<tr><td class="name"><a class="plink" href="#/player/${p.id}">${esc(p.name)}</a>${p.is_admin ? ' <span class="tag admin">A</span>' : ''}${p.is_spectator ? ' <span class="tag spec">👀</span>' : ''}
         <div class="show-sm dim sub2">${p.last_login_at ? 'login ' + esc(ago(p.last_login_at)) : ''}${p.devices.length ? ' · ' + esc(p.devices.join(', ')) : ''}</div></td>
       <td class="${cls(p.last_seen_at || p.last_login_at)}">${esc(ago(p.last_seen_at || p.last_login_at) || 'never')}</td>
       <td class="hide-sm dim">${p.last_login_at ? `${fmtShort(p.last_login_at)} ${fmtTime(p.last_login_at)}` : '—'}</td>
@@ -1372,7 +1373,7 @@ async function adminSquad(el) {
   let sugg = [];
   try { sugg = (await api('GET', '/api/admin/ability-suggestions')).suggestions; } catch {}
   const all = [...S.players].sort((a, b) => b.active - a.active || a.name.localeCompare(b.name));
-  const list = all.filter((p) => !p.is_guest), guests = all.filter((p) => p.is_guest);
+  const list = all.filter((p) => !p.is_guest && !p.is_spectator), guests = all.filter((p) => p.is_guest), specs = all.filter((p) => p.is_spectator && !p.is_guest);
   el.innerHTML = `
   ${sugg.length ? `<div class="panel"><div class="panel-h" style="background:var(--ye);color:#000">⭐ Ability suggestions<span class="spacer"></span><span class="sub">from team-mate ratings</span></div><div class="panel-b">
     ${sugg.map((x) => `<div class="sug"><span class="nm">${esc(x.name.toUpperCase())}</span><span class="dim">rated ${x.avg.toFixed(1)} (${x.games} games)</span>
@@ -1380,10 +1381,12 @@ async function adminSquad(el) {
       <button class="btn sm primary" data-apply="${x.id}" data-to="${x.suggest}" data-avg="${x.avg}">Apply</button></div>`).join('')}
     <p class="dim" style="font-size:17px;margin:6px 0 0">Based on the last 10 rated games (min 3). Apply = set the new ability and announce it in the news.</p></div></div>` : ''}
   <div class="panel"><div class="panel-h">Squad<span class="spacer"></span><span class="sub">${list.filter((p) => p.active).length} active</span>
-    <button class="btn sm primary" id="add">+ Add player</button><button class="btn sm" id="bulk">Bulk add</button></div>
+    <button class="btn sm primary" id="add">+ Add player</button><button class="btn sm" id="addspec">+ Spectator</button><button class="btn sm" id="bulk">Bulk add</button></div>
     <div class="table-wrap"><table class="fm"><thead><tr><th>Name</th><th class="hide-sm">Phone</th><th>Pos</th><th class="hide-sm">Ability</th><th class="hide-sm"></th></tr></thead><tbody>
     ${list.map((p) => `<tr class="click" data-id="${p.id}" style="${p.active ? '' : 'opacity:.5'}"><td class="name">${esc(p.name)}<div class="show-sm dim sub2">${esc(p.phone)} ${stars(p.rating)} ${p.is_admin ? '<span class="tag admin">ADMIN</span>' + (p.has_pin ? '' : ' <span class="r">NO PIN</span>') : ''}${p.active ? '' : ' <span class="tag">INACTIVE</span>'}</div></td><td class="dim hide-sm">${esc(p.phone)}</td>
       <td>${posBadge(p.position)}</td><td class="hide-sm">${stars(p.rating)}</td><td class="hide-sm">${p.is_admin ? '<span class="tag admin">Admin</span>' + (p.has_pin ? '' : ' <span class="r flash">NO PIN</span>') : ''} ${p.active ? '' : '<span class="tag">Inactive</span>'}</td></tr>`).join('')}
+    ${specs.length ? `<tr class="divider"><td colspan="5">Spectators (${specs.length}) — can keep the live score, don't play</td></tr>
+      ${specs.map((p) => `<tr class="click" data-id="${p.id}" style="${p.active ? '' : 'opacity:.5'}"><td class="name">${esc(p.name)} <span class="tag spec">👀</span><div class="show-sm dim sub2">${esc(p.phone)}</div></td><td class="dim hide-sm">${esc(p.phone)}</td><td></td><td class="hide-sm"></td><td class="hide-sm">${p.is_admin ? '<span class="tag admin">Admin</span>' : ''}</td></tr>`).join('')}` : ''}
     ${guests.length ? `<tr class="divider"><td colspan="5">Guests (${guests.length})</td></tr>
       ${guests.map((p) => `<tr class="click" data-id="${p.id}"><td class="name">${esc(p.name)} <span class="tag guest">GUEST</span></td><td class="dim hide-sm">—</td><td>${posBadge(p.position)}</td><td class="hide-sm">${stars(p.rating)}</td><td class="hide-sm"></td></tr>`).join('')}` : ''}
     </tbody></table></div>
@@ -1396,6 +1399,7 @@ async function adminSquad(el) {
     catch (e) { fail(e); }
   }));
   $('#add').onclick = () => playerForm(null, () => adminSquad(el));
+  $('#addspec').onclick = () => playerForm({ name: '', phone: '', position: 'MID', rating: 5, is_admin: false, active: true, is_spectator: true, _new: true }, () => adminSquad(el));
   $('#bulk').onclick = () => bulkForm(() => adminSquad(el));
   $$('tr[data-id]', el).forEach((tr) => (tr.onclick = () => playerForm(S.pmap[tr.dataset.id], () => adminSquad(el))));
 }
@@ -1410,15 +1414,15 @@ function modal(title, bodyHtml, onMount) {
 }
 
 function playerForm(p, done) {
-  const isNew = !p; p = p || { name: '', phone: '', position: 'MID', rating: 5, is_admin: false, active: true };
+  const isNew = !p || p._new; p = p || { name: '', phone: '', position: 'MID', rating: 5, is_admin: false, active: true };
   const guest = !!p.is_guest;
-  modal(isNew ? 'New player' : `Edit ${p.name}`, `
+  modal(isNew ? (p.is_spectator ? 'New spectator' : 'New player') : `Edit ${p.name}`, `
     <form id="pf">
       <div class="form-grid">
         <label class="f"><span>Name</span><input type="text" name="name" value="${esc(p.name)}" required></label>
         <label class="f"><span>Phone (WhatsApp)</span><input type="tel" name="phone" value="${esc(guest ? '' : p.phone)}" ${guest ? '' : 'required'} placeholder="${guest ? 'add to make them a member' : '+381641234567'}"></label>
-        <label class="f"><span>Position</span><select name="position">${['GK', 'DEF', 'MID', 'FWD'].map((x) => `<option ${x === p.position ? 'selected' : ''}>${x}</option>`).join('')}</select></label>
-        <label class="f"><span>Ability (0–10)</span><select name="rating">${ablOptions(p.rating)}</select></label>
+        <label class="f playonly" ${p.is_spectator ? 'hidden' : ''}><span>Position</span><select name="position">${['GK', 'DEF', 'MID', 'FWD'].map((x) => `<option ${x === p.position ? 'selected' : ''}>${x}</option>`).join('')}</select></label>
+        <label class="f playonly" ${p.is_spectator ? 'hidden' : ''}><span>Ability (0–10)</span><select name="rating">${ablOptions(p.rating)}</select></label>
       </div>
       <div id="annrow" hidden class="annrow">
         <label class="check"><input type="checkbox" name="announce"> <span id="anntxt">Announce this change in the news</span></label>
@@ -1429,6 +1433,7 @@ function playerForm(p, done) {
       <label class="f" id="pinf" ${p.is_admin ? '' : 'hidden'}><span class="m">Admin PIN ${p.has_pin ? '(set — type to change)' : '(required for admin rights)'}</span>
         <input type="password" name="pin" inputmode="numeric" autocomplete="new-password" placeholder="4–8 digits"></label>
       <label class="check"><input type="checkbox" name="active" ${p.active ? 'checked' : ''}> Active (can log in, shows in squad)</label>
+      <label class="check"><input type="checkbox" name="is_spectator" ${p.is_spectator ? 'checked' : ''}> 👀 Spectator — doesn't play, but can log in, keep the live score and predict</label>
       </div>
       <div class="err" id="perr"></div>
       <div class="btn-row" style="justify-content:space-between">
@@ -1438,6 +1443,7 @@ function playerForm(p, done) {
     </form>`, (root, close) => {
     const f = $('#pf', root);
     f.is_admin.onchange = () => { $('#pinf', root).hidden = !f.is_admin.checked; };
+    f.is_spectator.onchange = () => $$('.playonly', root).forEach((x) => (x.hidden = f.is_spectator.checked));
     f.rating.onchange = () => {
       const nv = Number(f.rating.value), changed = !isNew && nv !== p.rating, up = nv > p.rating;
       $('#annrow', root).hidden = !changed;
@@ -1445,8 +1451,8 @@ function playerForm(p, done) {
     };
     f.onsubmit = async (e) => {
       e.preventDefault();
-      const body = { name: f.name.value, phone: f.phone.value, position: f.position.value, rating: Number(f.rating.value), is_admin: f.is_admin.checked, active: f.active.checked, pin: f.pin.value };
-      if (guest && !f.phone.value.trim()) { delete body.phone; delete body.is_admin; delete body.active; delete body.pin; }
+      const body = { name: f.name.value, phone: f.phone.value, position: f.position.value, rating: Number(f.rating.value), is_admin: f.is_admin.checked, active: f.active.checked, pin: f.pin.value, is_spectator: f.is_spectator.checked };
+      if (guest && !f.phone.value.trim()) { delete body.phone; delete body.is_admin; delete body.active; delete body.pin; delete body.is_spectator; }
       if (!isNew && Number(f.rating.value) !== p.rating) { body.announce = f.announce.checked; body.note = f.note.value; }
       try { isNew ? await api('POST', '/api/players', body) : await api('PUT', `/api/players/${p.id}`, body); close(); toast('Saved'); done(); }
       catch (err) { $('#perr', root).textContent = err.message; }
