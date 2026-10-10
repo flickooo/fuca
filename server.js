@@ -440,7 +440,10 @@ route('GET', '/api/me', (req, res, { user }) => send(res, 200, { user: meJson(us
 // ---------- routes: players ----------
 route('GET', '/api/players', (req, res, { user }) => {
   const rows = db.prepare(`SELECT * FROM players ${user.is_admin ? '' : 'WHERE active=1'} ORDER BY is_guest, name COLLATE NOCASE`).all();
-  send(res, 200, { players: rows.map((p) => pubPlayer(p, user.is_admin)) });
+  // form = average team-mate rating over the last 5 rated games (used by Auto-balance)
+  const hist = ratingHistory();
+  send(res, 200, { players: rows.map((p) => { const last = (hist[p.id] || []).slice(0, 5);
+    return { ...pubPlayer(p, user.is_admin), form: avgOf(last), form_n: last.length }; }) });
 });
 
 const playerFields = (b, existing = {}) => {
@@ -977,11 +980,12 @@ const matchPoints = (m, R = pointRules()) => {
       if (g.assist_id === l.player_id) pts += R.assist;
     }
     if (motm.includes(l.player_id)) pts += R.motm;
-    const row = { pts, gk: false, blocks: 0, conceded: 0, timed: false, live_goals: true };
+    const row = { pts, gk: false, blocks: 0, conceded: 0, timed: false, live_goals: true, gk_pts: 0 };
     if (l.slot === 0) {
-      // goalkeeper: penalty per goal conceded, bonus for every full clean block of minutes
+      // goalkeeper: penalty per goal conceded, bonus for every full clean block of minutes.
+      // Only counted when the clock was used and goals were recorded live, and never below 0:
+      // being in goal can't cost a keeper points compared with his team-mates.
       row.gk = true; row.conceded = a;
-      pts += a * R.gk_conceded;
       const against = goals.filter((g) => g.team !== l.team);
       row.timed = !!(m.clock_started && m.kicked_off_at);
       row.live_goals = against.length === a;
@@ -996,7 +1000,9 @@ const matchPoints = (m, R = pointRules()) => {
           blocks += Math.floor((tt - prev) / block); prev = tt;
         }
         blocks += Math.floor((end - prev) / block);
-        row.blocks = blocks; pts += blocks * R.gk_clean_block;
+        row.blocks = blocks;
+        row.gk_pts = r2(Math.max(0, blocks * R.gk_clean_block + a * R.gk_conceded));
+        pts += row.gk_pts;
       }
     }
     row.pts = r2(pts);

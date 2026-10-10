@@ -425,8 +425,8 @@ function gkBreakdown(m) {
   const keepers = Object.entries(m.points || {}).filter(([pid, x]) => x.gk && S.pmap[pid]);
   if (!keepers.length) return '';
   return `<div class="gkb">${keepers.map(([pid, x]) => `<div>🧤 <b>${esc(shortName(S.pmap[pid].name).toUpperCase())}</b>: ${x.conceded} conceded ·
-    ${x.timed ? (x.live_goals ? `<span class="g">${x.blocks} clean block${x.blocks === 1 ? '' : 's'}</span>` : '<span class="r">goals not recorded live — no clean blocks</span>')
-      : `<span class="r">clock not started — no clean blocks</span>${S.me.is_admin ? ` <a class="c" href="#/live/${m.id}">[set kick-off]</a>` : ''}`}</div>`).join('')}</div>`;
+    ${x.timed ? (x.live_goals ? `<span class="g">${x.blocks} clean block${x.blocks === 1 ? '' : 's'}</span> · keeper bonus <b class="g">+${fmtPts(x.gk_pts || 0)}</b>` : '<span class="r">goals not recorded live — no keeper points</span>')
+      : `<span class="r">clock not started — no keeper points</span>${S.me.is_admin ? ` <a class="c" href="#/live/${m.id}">[set kick-off]</a>` : ''}`}</div>`).join('')}</div>`;
 }
 
 // ---------- goals / motm helpers ----------
@@ -1032,7 +1032,7 @@ function renderTactics(v) {
       ${p ? `<div class="pa ${!bench && p.position !== role ? 'oop' : ''}" title="${!bench && p.position !== role ? `Natural ${p.position}, playing ${role}` : ''}"><span class="pos ${p.position}">${p.position}</span><span class="an ${ablCls(p.rating)}">${p.rating}</span></div>` : ''}</div>`;
   };
   const benchSlots = (team) => Array.from({ length: BENCH }, (_, i) => slotHtml(team, { slot: 100 + i }, true)).join('');
-  const sum = (team) => Object.entries(T.asg).filter(([k]) => k.startsWith(team + ':')).map(([, pid]) => S.pmap[pid]?.rating || 0);
+  const sum = (team) => Object.entries(T.asg).filter(([k]) => k.startsWith(team + ':')).map(([, pid]) => (S.pmap[pid] ? strength(S.pmap[pid]) : 0));
   const ra = sum('A'), rb = sum('B');
   const tot = ra.reduce((a, b) => a + b, 0), totB = rb.reduce((a, b) => a + b, 0);
   const pool = tacPool(T);
@@ -1044,7 +1044,8 @@ function renderTactics(v) {
     <span class="sub">${m.team_size} v ${m.team_size}${ed ? (m.lineup_published ? ' · <b class="g">Published</b>' : ' · Draft (only admins see it)') : ''}</span></div>
     ${ed ? `<div class="panel-b btn-row" style="justify-content:space-between">
       <div class="btn-row">
-        <button class="btn" id="auto" title="Split the IN players into two balanced teams by ability">⚖ Auto-balance</button>
+        <button class="btn" id="auto" title="Split the IN players into the fairest two teams (ability + recent form, keepers apart)">⚖ Auto-balance</button>
+        <button class="btn" id="shuffle" title="Another split that is just as fair">🔀 Shuffle</button>
         <button class="btn ghost" id="clear">Clear</button>
       </div>
       <div class="btn-row">
@@ -1075,22 +1076,24 @@ function renderTactics(v) {
         <div><h4><span class="chip-team A"></span> ${esc(m.team_a_name)} subs</h4><div class="slots">${benchSlots('A')}</div></div>
         <div><h4><span class="chip-team B"></span> ${esc(m.team_b_name)} subs</h4><div class="slots">${benchSlots('B')}</div></div>
       </div>
-      <div class="strength">
-        <span>${ra.length} · ${tot}</span>
+      <div class="strength" title="Team strength = ability mixed with recent form">
+        <span>${esc(m.team_a_name.toUpperCase())} <b>${fmt1(tot)}</b></span>
         <div class="bar"><i class="a" style="width:${tot + totB ? (tot / (tot + totB)) * 100 : 50}%"></i><i class="b" style="flex:1"></i></div>
-        <span>${totB} · ${rb.length}</span>
+        <span><b>${fmt1(totB)}</b> ${esc(m.team_b_name.toUpperCase())}</span>
       </div>
+      <div class="dim" style="text-align:center;font-size:16px">Strength ${ra.length} v ${rb.length} · difference ${fmt1(Math.abs(tot - totB))}</div>
     </div>
     <div class="side">
       <div class="panel drop-pool" id="pool"><div class="panel-h">Available players<span class="spacer"></span><span class="sub">${pool.filter((a) => !a.placed).length} unassigned</span></div>
-        <div class="table-wrap"><table class="fm"><thead><tr><th></th><th>Name</th><th>Pos</th><th>Ability</th><th>Team</th></tr></thead><tbody>
+        <div class="table-wrap"><table class="fm"><thead><tr><th></th><th>Name</th><th>Pos</th><th>Ability</th><th class="num" title="Ability mixed with recent form">Str</th><th>Team</th></tr></thead><tbody>
         ${pool.map((a) => {
           const tm = teamOf(T, a.player_id);
           return `<tr class="${ed ? 'click' : ''} ${selPid === a.player_id ? 'sel' : ''} ${a.placed && selPid !== a.player_id ? 'placed' : ''}" data-pid="${a.player_id}" ${ed ? 'draggable="true"' : ''}>
             <td>${a.reserve ? '<span class="st res" title="Reserve">RES</span>' : '<span class="st in">IN</span>'}</td>
             <td class="name">${esc(a.p.name)}</td><td>${posBadge(a.p.position)}</td><td>${stars(a.p.rating)}</td>
+            <td class="num" title="${a.p.form != null && a.p.form_n >= FORM_MIN_GAMES ? `Form ${a.p.form.toFixed(1)} over ${a.p.form_n} games` : 'Not enough ratings yet — ability only'}"><span class="${ablCls(strength(a.p))}">${fmt1(strength(a.p))}</span></td>
             <td>${tm ? `<span class="chip-team ${tm[0]}"></span> ${Number(tm[1]) >= 100 ? '<span class="dim">sub</span>' : ''}` : '<span class="dim">—</span>'}</td></tr>`;
-        }).join('') || '<tr><td colspan="5" class="muted">Nobody has signed up yet.</td></tr>'}
+        }).join('') || '<tr><td colspan="6" class="muted">Nobody has signed up yet.</td></tr>'}
         </tbody></table></div>
       </div>
       <a class="btn ghost" href="#/match/${m.id}" style="margin-top:8px">‹ Back to match</a>
@@ -1102,6 +1105,7 @@ function renderTactics(v) {
   $('#fa').onchange = (e) => { T.fa = e.target.value; T.dirty = true; rerender(); };
   $('#fb').onchange = (e) => { T.fb = e.target.value; T.dirty = true; rerender(); };
   $('#auto').onclick = () => { autoBalance(T); T.sel = null; T.dirty = true; rerender(); };
+  $('#shuffle').onclick = () => { autoBalance(T, true); T.sel = null; T.dirty = true; rerender(); };
   $('#clear').onclick = () => { T.asg = {}; T.sel = null; T.dirty = true; rerender(); };
   $('#save').onclick = () => saveLineup(false);
   $('#publish').onclick = () => saveLineup(true);
@@ -1154,63 +1158,61 @@ function slotTap(T, key) {
 }
 
 const POS_ORDER = { GK: 0, DEF: 1, MID: 2, FWD: 3 };
-// Split the IN players into two teams that are even on ability AND on positions
-// (both keepers apart, defenders/midfielders/forwards spread evenly), then place them on the pitch.
-function balanceSplit(players) {
-  const tot = (t) => t.reduce((x, p) => x + p.rating, 0);
-  const cnt = (t, pos) => t.filter((p) => p.position === pos).length;
-  const W = { GK: 20, DEF: 4, MID: 3, FWD: 4 }; // how much an uneven split of each position hurts
-  const cost = (A, B) => {
-    let c = Math.abs(tot(A) - tot(B)) * 1.5 + Math.abs(A.length - B.length) * 50;
-    for (const pos of Object.keys(W)) {
-      const a = cnt(A, pos), b = cnt(B, pos);
-      c += W[pos] * (Math.abs(a - b) - ((a + b) % 2)); // odd numbers can't split evenly — don't punish that
-    }
-    return c;
-  };
-  // 1. greedy start: each position group best-first, to the side with fewer of that position / weaker side
-  const rnd = new Map(players.map((p) => [p.id, Math.random()]));
-  const A = [], B = [];
-  for (const pos of ['GK', 'DEF', 'MID', 'FWD']) {
-    const grp = players.filter((p) => p.position === pos).sort((x, y) => y.rating - x.rating || rnd.get(x.id) - rnd.get(y.id));
-    for (const p of grp) {
-      const ca = cnt(A, pos), cb = cnt(B, pos);
-      let toA;
-      if (ca !== cb) toA = ca < cb;
-      else if (A.length !== B.length) toA = A.length < B.length;
-      else { const ta = tot(A), tb = tot(B); toA = ta !== tb ? ta < tb : Math.random() < 0.5; }
-      (toA ? A : B).push(p);
+// Strength used for balancing: the ability you set, mixed with recent form (team-mate ratings, last 5 games)
+const FORM_WEIGHT = 0.4, FORM_MIN_GAMES = 2;
+const strength = (p) => (p.form != null && p.form_n >= FORM_MIN_GAMES ? Math.round(((1 - FORM_WEIGHT) * p.rating + FORM_WEIGHT * p.form) * 10) / 10 : p.rating);
+const fmt1 = (x) => (Math.round(x * 10) / 10).toString();
+// Split the IN players into two teams as even as possible on strength. Only keepers matter for positions:
+// the two best GKs always go to different teams. Every possible split is checked and the fairest is picked.
+// shuffle = pick any split that is nearly as fair (within SHUFFLE_TOL), avoiding the current one (prevKey).
+const SHUFFLE_TOL = 1;
+function balanceSplit(players, shuffle, prevKey) {
+  const n = players.length;
+  const str = players.map(strength);
+  const total = str.reduce((x, y) => x + y, 0);
+  const gks = players.map((p, i) => i).filter((i) => players[i].position === 'GK').sort((x, y) => str[y] - str[x]);
+  const [g1, g2] = gks;
+  const sizes = [Math.floor(n / 2), Math.ceil(n / 2)];
+  const splits = [];
+  if (n > 20) { // too many to try every split: snake draft by strength
+    const order = players.map((p, i) => i).sort((x, y) => str[y] - str[x]);
+    splits.push({ a: order.filter((_, k) => k % 4 === 0 || k % 4 === 3), diff: 0 });
+  } else {
+    // player 0 is always on side A so each split is only counted once
+    for (let mask = 0; mask < 1 << (n - 1); mask++) {
+      const a = [0];
+      for (let i = 1; i < n; i++) if (mask & (1 << (i - 1))) a.push(i);
+      if (!sizes.includes(a.length)) continue;
+      if (g2 != null && a.includes(g1) === a.includes(g2)) continue;
+      const sa = a.reduce((x, i) => x + str[i], 0);
+      splits.push({ a, diff: Math.abs(total - 2 * sa) });
     }
   }
-  // 2. improve by swapping players between the teams while it makes things fairer
-  let best = cost(A, B);
-  for (let round = 0; round < 60; round++) {
-    let move = null;
-    for (let i = 0; i < A.length; i++) for (let j = 0; j < B.length; j++) {
-      [A[i], B[j]] = [B[j], A[i]];
-      const c = cost(A, B);
-      if (c < best) { best = c; move = [i, j]; }
-      [A[i], B[j]] = [B[j], A[i]];
-    }
-    if (!move) break;
-    [A[move[0]], B[move[1]]] = [B[move[1]], A[move[0]]];
-  }
-  return [A, B];
+  if (!splits.length) return [players, []];
+  const best = splits.reduce((m, x) => Math.min(m, x.diff), Infinity);
+  const key = (a) => a.map((i) => players[i].id).sort((x, y) => x - y).join(',');
+  const otherKey = (a) => players.map((p, i) => i).filter((i) => !a.includes(i)).map((i) => players[i].id).sort((x, y) => x - y).join(',');
+  let pool = splits.filter((x) => x.diff <= best + (shuffle ? SHUFFLE_TOL : 0.05));
+  if (prevKey) { const fresh = pool.filter((x) => key(x.a) !== prevKey && otherKey(x.a) !== prevKey); if (fresh.length) pool = fresh; }
+  const pick = pool[Math.floor(Math.random() * pool.length)].a;
+  const A = players.filter((p, i) => pick.includes(i)), B = players.filter((p, i) => !pick.includes(i));
+  return Math.random() < 0.5 ? [A, B] : [B, A];
 }
 
-function autoBalance(T) {
+function autoBalance(T, shuffle) {
   const players = T.m.attendance.filter((a) => a.status === 'in' && !a.reserve).map((a) => S.pmap[a.player_id]).filter(Boolean);
-  const [A, B] = balanceSplit(players);
+  const prevKey = Object.entries(T.asg).filter(([k]) => k.startsWith('A:')).map(([, pid]) => pid).sort((x, y) => x - y).join(',');
+  const [A, B] = balanceSplit(players, shuffle, prevKey);
   // who can cover a role if nobody has that exact position (best fit first)
   const FALLBACK = { GK: ['GK', 'DEF', 'MID', 'FWD'], DEF: ['DEF', 'MID', 'FWD', 'GK'], MID: ['MID', 'DEF', 'FWD', 'GK'], FWD: ['FWD', 'MID', 'DEF', 'GK'] };
   const place = (team, list, formation) => {
     const layout = slotLayout(formation, team);
     const pool = [...list].sort((x, y) => y.rating - x.rating);
     const asg = {};
-    // fill the scarcest roles first so specialists land in their own position
-    const roles = ['GK', 'DEF', 'MID', 'FWD'].sort((r1, r2) =>
+    // goal first (a GK always goes in goal), then the scarcest roles so specialists land in their own position
+    const roles = ['GK', ...['DEF', 'MID', 'FWD'].sort((r1, r2) =>
       (pool.filter((p) => p.position === r1).length - layout.filter((s) => s.role === r1).length) -
-      (pool.filter((p) => p.position === r2).length - layout.filter((s) => s.role === r2).length));
+      (pool.filter((p) => p.position === r2).length - layout.filter((s) => s.role === r2).length))];
     const starters = Math.min(layout.length, pool.length);
     let placed = 0;
     for (const role of roles) {
@@ -1319,7 +1321,7 @@ async function viewStats() {
           <span>Every ${R.gk_block_minutes} min without conceding</span><b class="g">+${R.gk_clean_block}</b>
           <span>Every goal conceded</span><b class="r">${R.gk_conceded}</b>
         </div>
-        <p class="dim" style="margin:8px 0 0;font-size:17px">Clean minutes are counted from ▶ Kick off to full time, only when goals were recorded live. Abl = ability (0–10). Rtg = average team-mate rating (1–10). P/G = points per game. ★ = man-of-the-match wins.</p>
+        <p class="dim" style="margin:8px 0 0;font-size:17px">Keeper points only count when ▶ Kick off was used and goals were recorded live, and they never go below 0 — being in goal never costs you points. Abl = ability (0–10). Rtg = average team-mate rating (1–10). P/G = points per game. ★ = man-of-the-match wins.</p>
         ${S.me.is_admin ? '<a class="btn sm" href="#/admin/settings" style="margin-top:8px">Change rules</a>' : ''}
       </div></div>`;
     $$('th[data-k]', v).forEach((th) => (th.onclick = () => {
@@ -1398,7 +1400,7 @@ async function adminSquad(el) {
     ${guests.length ? `<tr class="divider"><td colspan="5">Guests (${guests.length})</td></tr>
       ${guests.map((p) => `<tr class="click" data-id="${p.id}"><td class="name">${esc(p.name)} <span class="tag guest">GUEST</span></td><td class="dim hide-sm">—</td><td>${posBadge(p.position)}</td><td class="hide-sm">${stars(p.rating)}</td><td class="hide-sm"></td></tr>`).join('')}` : ''}
     </tbody></table></div>
-    <div class="panel-b muted" style="font-size:18px">Only phone numbers on this list can log in. Ability drives Auto-balance. Tap a guest to rename them, or add their number to make them a member.</div>
+    <div class="panel-b muted" style="font-size:18px">Only phone numbers on this list can log in. Ability (mixed with recent form from team-mate ratings) drives Auto-balance. Tap a guest to rename them, or add their number to make them a member.</div>
   </div>`;
   $$('[data-apply]', el).forEach((b) => (b.onclick = async () => {
     const p = S.pmap[b.dataset.apply], to = Number(b.dataset.to);
