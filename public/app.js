@@ -355,7 +355,7 @@ async function viewRate(id) {
   const team = (t) => m.lineup.filter((l) => l.team === t && l.player_id !== S.me.id && S.pmap[l.player_id]).sort((x, y) => x.slot - y.slot);
   const row = (l) => { const p = S.pmap[l.player_id], cur = mine[l.player_id];
     return `<div class="rate-row" data-pid="${l.player_id}"><div class="rn"><span class="nm">${esc(p.name.toUpperCase())}</span>
-      <span class="rx">${l.slot === 0 ? '🧤' : ''}${'⚽'.repeat(g[l.player_id] || 0)}${a[l.player_id] ? ` <span class="c">${'A'.repeat(a[l.player_id])}</span>` : ''}</span><span class="rs ${cur ? ratingCls(cur) : 'dim'}">${cur ?? '–'}</span></div>
+      <span class="ra" title="Ability">${stars(p.rating)}</span><span class="rx">${l.slot === 0 ? '🧤' : ''}${'⚽'.repeat(g[l.player_id] || 0)}${a[l.player_id] ? ` <span class="c">${'A'.repeat(a[l.player_id])}</span>` : ''}</span><span class="rs ${cur ? ratingCls(cur) : 'dim'}">${cur ?? '–'}</span></div>
       <div class="rbtns">${Array.from({ length: 10 }, (_, i) => i + 1).map((n) => `<button class="rb ${cur === n ? 'on' : ''}" data-s="${n}">${n}</button>`).join('')}</div></div>`; };
   const draw = () => {
     const done = Object.keys(mine).length;
