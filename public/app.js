@@ -184,12 +184,17 @@ function squadRows(m) {
   const res = m.attendance.filter((a) => a.reserve);
   const outs = m.attendance.filter((a) => a.status === 'out');
   const none = S.players.filter((p) => p.active && !p.is_guest && !p.is_spectator && !byPid[p.id]);
+  const watch = m.attendance.filter((a) => a.status === 'watch');
   const admin = S.me.is_admin;
+  // admins also see spectators who haven't marked themselves, so they can add them after the game
+  const specsNone = admin ? S.players.filter((p) => p.active && p.is_spectator && !p.is_guest && !byPid[p.id]) : [];
   const row = (pid, st, i) => {
     const p = S.pmap[pid]; if (!p) return '';
-    const icon = st === 'in' ? '<span class="st in">IN</span>' : st === 'res' ? '<span class="st res">RES</span>' : st === 'out' ? '<span class="st out">OUT</span>' : '<span class="st none">???</span>';
+    const icon = st === 'in' ? '<span class="st in">IN</span>' : st === 'watch' ? '<span class="st watch">👀</span>' : st === 'res' ? '<span class="st res">RES</span>' : st === 'out' ? '<span class="st out">OUT</span>' : '<span class="st none">???</span>';
     const cur = st === 'res' ? 'in' : st;
-    const ctl = admin && !p.is_guest ? `<select class="admin-status" data-pid="${pid}">
+    const ctl = admin && p.is_spectator ? `<select class="admin-status" data-pid="${pid}">
+        <option value="none" ${cur === 'none' ? 'selected' : ''}>–</option><option value="watch" ${cur === 'watch' ? 'selected' : ''}>Watch</option></select>`
+      : admin && !p.is_guest ? `<select class="admin-status" data-pid="${pid}">
         <option value="none" ${cur === 'none' ? 'selected' : ''}>–</option><option value="in" ${cur === 'in' ? 'selected' : ''}>In</option><option value="out" ${cur === 'out' ? 'selected' : ''}>Out</option></select>` : '';
     const a = byPid[pid];
     const paid = st === 'in' || st === 'res' || (a && a.paid)
@@ -201,6 +206,7 @@ function squadRows(m) {
   return `
   ${div('Playing', ins.length)}${ins.map((a, i) => row(a.player_id, 'in', i + 1)).join('') || '<tr><td colspan="7" class="muted">Nobody yet — be the first!</td></tr>'}
   ${res.length ? div('Reserves (waiting list)', res.length) + res.map((a, i) => row(a.player_id, 'res', i + 1)).join('') : ''}
+  ${watch.length || specsNone.length ? div('Watching', watch.length) + watch.map((a) => row(a.player_id, 'watch')).join('') + specsNone.map((p) => row(p.id, 'none')).join('') : ''}
   ${div('Not coming', outs.length)}${outs.map((a) => row(a.player_id, 'out')).join('')}
   ${none.length ? div('No reply', none.length) + none.map((p) => row(p.id, 'none')).join('') : ''}`;
 }
@@ -236,7 +242,9 @@ async function viewMatch(id, focus) {
           <div class="panel-b">
             ${fixtureHeader(m)}
             ${played ? `<div class="scoreline">${esc(m.team_a_name)} ${m.score_a} – ${m.score_b} ${esc(m.team_b_name)}<small>Full time</small></div>` : ''}
-            ${open && S.me.is_spectator ? `<div class="specnote">👀 <b class="c">YOU'RE A SPECTATOR</b><br>Follow the game and keep the score: the <b class="g">LIVE SCORE</b> opens on the <b class="g">TEAMS</b> page 30 min before kick-off.</div>` : ''}
+            ${open && S.me.is_spectator ? `<div class="specnote">👀 <b class="c">YOU'RE A SPECTATOR</b><br>Follow the game and keep the score: the <b class="g">LIVE SCORE</b> opens on the <b class="g">TEAMS</b> page 30 min before kick-off.
+              <div class="big-choice"><button class="btn watch ${m.my_status === 'watch' ? 'chosen' : ''}" data-st="watch">${m.my_status === 'watch' ? '✓ WATCHING' : '👀 I\'M COMING TO WATCH'}</button></div>
+              <div class="muted">${m.my_status === 'watch' ? 'After the game you can vote man of the match and rate the players. Tap again to cancel.' : 'Coming to the game? Tap so you can vote MOTM and rate players afterwards.'}</div></div>` : ''}
             ${open && !S.me.is_spectator ? `
               <div class="big-choice">
                 <button class="btn in ${m.my_status === 'in' ? 'chosen' : m.my_status ? 'idle' : ''}" data-st="in">IN</button>
@@ -328,7 +336,7 @@ function ratingsPanel(m) {
   if (R.open) {
     const done = Object.keys(R.mine).length;
     return `<div class="panel"><div class="panel-h" style="background:var(--ye);color:#000">⭐ Player ratings<span class="spacer"></span><span class="sub">${R.raters}/${R.eligible} rated</span></div><div class="panel-b">
-      ${R.can_rate ? `<a class="btn ${done < R.to_rate ? 'primary flash-soft' : 'ghost'}" href="#/rate/${m.id}" style="width:100%">${done ? `⭐ Your ratings: ${done}/${R.to_rate} — edit` : '⭐ Rate the players (1 min)'}</a>` : '<span class="muted">Only players who played can rate.</span>'}
+      ${R.can_rate ? `<a class="btn ${done < R.to_rate ? 'primary flash-soft' : 'ghost'}" href="#/rate/${m.id}" style="width:100%">${done ? `⭐ Your ratings: ${done}/${R.to_rate} — edit` : '⭐ Rate the players (1 min)'}</a>` : '<span class="muted">Only players who played (or watched) can rate.</span>'}
       <p class="dim" style="font-size:17px;margin:6px 0 0">Open until ${closes}. Averages are revealed when rating closes.</p></div></div>`;
   }
   if (!R.results.length) return '';
@@ -347,7 +355,7 @@ async function viewRate(id) {
   const R = m.ratings;
   if (!R || !R.open || !R.can_rate) {
     v.innerHTML = `<div class="panel"><div class="panel-h">Rate the players</div><div class="empty-state"><div class="ico">${!R ? 'NOT YET' : !R.open ? 'CLOSED' : 'PLAYERS ONLY'}</div>
-      <p>${!R ? 'Ratings open after full time.' : !R.open ? 'Rating for this match has closed.' : 'Only players who played in this match can rate.'}</p><a class="btn" href="#/match/${id}">‹ Match</a></div></div>`;
+      <p>${!R ? 'Ratings open after full time.' : !R.open ? 'Rating for this match has closed.' : 'Only players who played in (or watched) this match can rate.'}</p><a class="btn" href="#/match/${id}">‹ Match</a></div></div>`;
     return;
   }
   const mine = { ...R.mine };
@@ -479,7 +487,7 @@ function motmHtml(m) {
       <table class="fm"><tbody>${ranked.map(([pid, n]) => `<tr><td class="name">${esc(S.pmap[pid]?.name || '?')}</td><td class="num y">${n} vote${n > 1 ? 's' : ''}</td></tr>`).join('')}</tbody></table></div></div>`;
   }
   return `<div class="panel" id="motm"><div class="panel-h" style="background:var(--ma);color:#fff">★ Vote: man of the match</div><div class="panel-b">
-    <p class="muted" style="margin-top:0">${mo.can_vote ? 'You played — pick one (not yourself).' : 'Only players who played can vote.'}
+    <p class="muted" style="margin-top:0">${mo.can_vote ? 'Pick one (not yourself).' : 'Only players who played (or watched) can vote.'}
     Closes ${DAYS[closes.getDay()]} ${fmtTime(closes.toISOString())}. <span class="y">${mo.votes}/${mo.voters} voted</span></p>
     ${mo.can_vote ? played.filter((pid) => pid !== S.me.id && S.pmap[pid]).map((pid) =>
       `<button class="pbtn ${mo.my_vote === pid ? 'me' : ''}" data-vote="${pid}">${esc(S.pmap[pid].name)}<span class="g">${badge(pid)}${mo.my_vote === pid ? ' ✓ YOUR VOTE' : ''}</span></button>`).join('') : ''}

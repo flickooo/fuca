@@ -302,6 +302,9 @@ const voteClosesAt = (m) => {
   return new Date(base.getTime() + VOTE_HOURS * 3600e3).toISOString();
 };
 const playedIds = (matchId) => new Set(db.prepare('SELECT player_id FROM lineups WHERE match_id=?').all(matchId).map((r) => r.player_id));
+// spectators who marked themselves as watching this match: they may vote MOTM and rate too
+const watcherIds = (matchId) => new Set(db.prepare(`SELECT a.player_id FROM attendance a JOIN players p ON p.id=a.player_id
+  WHERE a.match_id=? AND a.status='watch' AND p.is_spectator=1 AND p.active=1`).all(matchId).map((r) => r.player_id));
 const motmWinners = (matchId) => {
   const rows = db.prepare('SELECT player_id, COUNT(*) AS n FROM motm_votes WHERE match_id=? GROUP BY player_id ORDER BY n DESC').all(matchId);
   if (!rows.length) return [];
@@ -311,12 +314,12 @@ const motmInfo = (m, user) => {
   const closes = voteClosesAt(m);
   if (!closes) return null;
   const open = new Date() < new Date(closes);
-  const played = playedIds(m.id);
-  const voters = db.prepare('SELECT COUNT(*) AS n FROM lineups l JOIN players p ON p.id=l.player_id WHERE l.match_id=? AND p.is_guest=0').get(m.id).n;
+  const played = playedIds(m.id), watchers = watcherIds(m.id);
+  const voters = db.prepare('SELECT COUNT(*) AS n FROM lineups l JOIN players p ON p.id=l.player_id WHERE l.match_id=? AND p.is_guest=0').get(m.id).n + watchers.size;
   const mine = db.prepare('SELECT player_id FROM motm_votes WHERE match_id=? AND voter_id=?').get(m.id, user.id);
   const total = db.prepare('SELECT COUNT(*) AS n FROM motm_votes WHERE match_id=?').get(m.id).n;
   const counts = open ? null : Object.fromEntries(db.prepare('SELECT player_id, COUNT(*) AS n FROM motm_votes WHERE match_id=? GROUP BY player_id').all(m.id).map((r) => [r.player_id, r.n]));
-  return { open, closes_at: closes, can_vote: open && played.has(user.id), my_vote: mine ? mine.player_id : null,
+  return { open, closes_at: closes, can_vote: open && (played.has(user.id) || watchers.has(user.id)), my_vote: mine ? mine.player_id : null,
     votes: total, voters, counts, winners: open ? [] : motmWinners(m.id) };
 };
 
@@ -362,10 +365,11 @@ const ratingInfo = (m, user) => {
   const open = Date.now() < Date.parse(closes);
   const lineup = db.prepare('SELECT l.player_id, p.is_guest FROM lineups l JOIN players p ON p.id=l.player_id WHERE l.match_id=?').all(m.id);
   const played = new Set(lineup.map((l) => l.player_id));
-  const eligible = lineup.filter((l) => !l.is_guest).map((l) => l.player_id);
+  const watchers = watcherIds(m.id);
+  const eligible = [...lineup.filter((l) => !l.is_guest).map((l) => l.player_id), ...watchers];
   const mine = Object.fromEntries(db.prepare('SELECT player_id, score FROM ratings WHERE match_id=? AND rater_id=?').all(m.id, user.id).map((r) => [r.player_id, r.score]));
   const raters = db.prepare('SELECT DISTINCT rater_id FROM ratings WHERE match_id=?').all(m.id).map((r) => r.rater_id);
-  return { open, closes_at: closes, can_rate: open && played.has(user.id) && !user.is_guest, mine, to_rate: played.size - 1,
+  return { open, closes_at: closes, can_rate: open && (played.has(user.id) || watchers.has(user.id)) && !user.is_guest, mine, to_rate: played.size - (played.has(user.id) ? 1 : 0),
     raters: raters.length, eligible: eligible.length, not_rated: eligible.filter((id) => !raters.includes(id)),
     results: open ? [] : matchRatings(m.id) };
 };
@@ -494,6 +498,9 @@ route('PUT', '/api/players/:id', (req, res, { user, body, params }) => {
     db.prepare(`DELETE FROM attendance WHERE player_id=? AND match_id IN (SELECT id FROM matches WHERE status='upcoming')`).run(ex.id);
     db.prepare(`DELETE FROM lineups WHERE player_id=? AND match_id IN (SELECT id FROM matches WHERE status='upcoming')`).run(ex.id);
   }
+  // ...and a spectator who becomes a player drops their "watching" marks on upcoming matches
+  if (!f.is_spectator && ex.is_spectator)
+    db.prepare(`DELETE FROM attendance WHERE player_id=? AND status='watch' AND match_id IN (SELECT id FROM matches WHERE status='upcoming')`).run(ex.id);
   if (f.pin) {
     db.prepare('UPDATE players SET pin_hash=? WHERE id=?').run(hashPw(f.pin), ex.id);
     if (ex.id !== user.id) db.prepare('DELETE FROM sessions WHERE player_id=?').run(ex.id);
@@ -575,7 +582,9 @@ route('POST', '/api/matches/:id/attendance', (req, res, { user, body, params }) 
   let pid = user.id;
   if (body.player_id != null && Number(body.player_id) !== user.id) { requireAdmin(user); pid = Number(body.player_id); }
   if (m.status !== 'upcoming' && !user.is_admin) bad('This match is closed');
-  if (db.prepare('SELECT is_spectator FROM players WHERE id=?').get(pid)?.is_spectator && body.status === 'in') bad("Spectators don't sign up to play — ask an admin to make you a player");
+  const spec = !!db.prepare('SELECT is_spectator FROM players WHERE id=?').get(pid)?.is_spectator;
+  if (spec && ['in', 'out'].includes(body.status)) bad("Spectators don't sign up to play — ask an admin to make you a player");
+  if (!spec && body.status === 'watch') bad('Only spectators can sign up to watch');
   const status = body.status;
   // Dropping out less than 24h before kick-off is remembered (for the "Late dropper" badge). Re-joining clears it.
   const prev = db.prepare('SELECT status FROM attendance WHERE match_id=? AND player_id=?').get(m.id, pid);
@@ -585,7 +594,7 @@ route('POST', '/api/matches/:id/attendance', (req, res, { user, body, params }) 
   if (status === 'in') db.prepare('DELETE FROM late_drops WHERE match_id=? AND player_id=?').run(m.id, pid);
   if (status === null || status === 'none') {
     db.prepare('DELETE FROM attendance WHERE match_id=? AND player_id=?').run(m.id, pid);
-  } else if (['in', 'out'].includes(status)) {
+  } else if (['in', 'out', 'watch'].includes(status)) {
     const ex = db.prepare('SELECT status FROM attendance WHERE match_id=? AND player_id=?').get(m.id, pid);
     if (!ex || ex.status !== status) {
       db.prepare(`INSERT INTO attendance(match_id,player_id,status,updated_at) VALUES(?,?,?,strftime('%Y-%m-%d %H:%M:%f','now'))
@@ -760,7 +769,7 @@ route('POST', '/api/matches/:id/ratings', (req, res, { user, body, params }) => 
   if (!m) throw new HttpError(404, 'Match not found');
   const info = ratingInfo(m, user);
   if (!info || !info.open) bad('Ratings are closed for this match');
-  if (!info.can_rate) bad('Only players who played can rate');
+  if (!info.can_rate) bad('Only players who played (or watched) can rate');
   const played = new Set(db.prepare('SELECT player_id FROM lineups WHERE match_id=?').all(m.id).map((r) => r.player_id));
   const scores = body.scores && typeof body.scores === 'object' ? body.scores : bad('Nothing to save');
   for (const [pidS, sc] of Object.entries(scores)) {
@@ -825,7 +834,7 @@ route('POST', '/api/matches/:id/motm', (req, res, { user, body, params }) => {
   if (!m) throw new HttpError(404, 'Match not found');
   const info = motmInfo(m, user);
   if (!info || !info.open) bad('Voting is closed');
-  if (!info.can_vote) bad('Only players who played can vote');
+  if (!info.can_vote) bad('Only players who played (or watched) can vote');
   const pid = Number(body.player_id);
   if (pid === user.id) bad("You can't vote for yourself");
   if (!playedIds(m.id).has(pid)) bad('That player did not play');
