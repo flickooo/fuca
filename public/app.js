@@ -83,7 +83,7 @@ function shell(active) {
   const me = S.me;
   return `
   <header class="topbar">
-    <div class="pageline"><span class="w">P${location.hash.startsWith('#/news') ? 101 : location.hash.startsWith('#/rate') ? 312 : location.hash.startsWith('#/live') ? 310 : location.hash.startsWith('#/player') ? 306 : (TABS.find((t) => t.id === active) || TABS[0]).page}</span><span class="c">FUDBAL</span><span class="y clock">${clockText()}</span></div>
+    <div class="pageline"><span class="w">P${location.hash.startsWith('#/news') ? 101 : location.hash.startsWith('#/updates') ? 190 : location.hash.startsWith('#/rate') ? 312 : location.hash.startsWith('#/live') ? 310 : location.hash.startsWith('#/player') ? 306 : (TABS.find((t) => t.id === active) || TABS[0]).page}</span><span class="c">FUDBAL</span><span class="y clock">${clockText()}</span></div>
     <div class="titleband"><span class="dh">FUDBAL TEXT</span><span class="who"><span class="c hide-sm">${esc(me.name.toUpperCase())}</span>${me.is_spectator ? ' <span class="c">👀</span>' : ''}${me.is_admin ? ' <span class="m">ADMIN</span>' : me.admin_account ? ' <button class="linkbtn m" id="adminpin">[ADMIN]</button>' : ''} <a class="linkbtn newslink" id="newslink" href="#/news">[NEWS${S.newsUnread ? ` <span class="nb">${S.newsUnread}</span>` : ''}]</a> <button class="linkbtn" id="logout">[EXIT]</button></span></div>
   </header>
   <main id="view"></main>
@@ -119,6 +119,7 @@ async function route() {
     else if (page === 'live' && arg) await viewLive(Number(arg));
     else if (page === 'player' && arg) await viewProfile(Number(arg));
     else if (page === 'news') await viewNews();
+    else if (page === 'updates') viewUpdates();
     else if (page === 'rate' && arg) await viewRate(Number(arg));
     else if (page === 'fixtures') await viewFixtures();
     else if (page === 'stats') await viewStats();
@@ -195,7 +196,7 @@ function squadRows(m) {
     const ctl = admin && p.is_spectator ? `<select class="admin-status" data-pid="${pid}">
         <option value="none" ${cur === 'none' ? 'selected' : ''}>–</option><option value="watch" ${cur === 'watch' ? 'selected' : ''}>Watch</option></select>`
       : admin && !p.is_guest ? `<select class="admin-status" data-pid="${pid}">
-        <option value="none" ${cur === 'none' ? 'selected' : ''}>–</option><option value="in" ${cur === 'in' ? 'selected' : ''}>In</option><option value="out" ${cur === 'out' ? 'selected' : ''}>Out</option></select>` : '';
+        <option value="none" ${cur === 'none' ? 'selected' : ''}>–</option><option value="in" ${cur === 'in' ? 'selected' : ''}>In</option><option value="out" ${cur === 'out' ? 'selected' : ''}>Out</option><option value="watch" ${cur === 'watch' ? 'selected' : ''}>Watch</option></select>` : '';
     const a = byPid[pid];
     const paid = st === 'in' || st === 'res' || (a && a.paid)
       ? (admin ? `<button class="paytog ${a.paid ? 'on' : 'off'}" data-paid="${pid}" data-v="${a.paid ? 0 : 1}">${a.paid ? 'PAID' : 'PAID?'}</button>`
@@ -249,10 +250,12 @@ async function viewMatch(id, focus) {
               <div class="big-choice">
                 <button class="btn in ${m.my_status === 'in' ? 'chosen' : m.my_status ? 'idle' : ''}" data-st="in">IN</button>
                 <button class="btn out ${m.my_status === 'out' ? 'chosen' : m.my_status ? 'idle' : ''}" data-st="out">OUT</button>
+                <button class="btn watch ${m.my_status === 'watch' ? 'chosen' : m.my_status ? 'idle' : ''}" data-st="watch">👀 NOT PLAYING, COMING TO WATCH</button>
               </div>
               <div class="muted" style="text-align:center">${
                 !mine ? 'You haven\'t replied yet.' : mine.reserve ? '<span class="y">WAITING LIST</span> — you\'ll move up if someone drops out.' :
-                mine.status === 'in' ? '<span class="g flash">YOU\'RE IN.</span> See you on the pitch!' : 'You\'re marked as not coming.'}</div>` : ''}
+                mine.status === 'in' ? '<span class="g flash">YOU\'RE IN.</span> See you on the pitch!' :
+                mine.status === 'watch' ? '<span class="c">👀 WATCHING.</span> You can vote man of the match and rate players after the game.' : 'You\'re marked as not coming.'}</div>` : ''}
           </div>
         </div>
         ${m.goals.length || played ? `<div class="panel"><div class="panel-h">${played ? 'Result' : 'Goals'}<span class="spacer"></span>${played ? '<button class="btn sm" id="report">Share report</button>' : ''}</div><div class="panel-b">${m.goals.length ? scorersHtml(m) + goalTimeline(m) : '<span class="dim">No goals were recorded live.</span>'}${pointsHtml(m)}</div></div>` : ''}
@@ -685,6 +688,68 @@ function newsShare(n) {
     : `📺 *FUDBAL TEXT P101*\n*${n.title}*${n.body ? `\n${n.body}` : ''}`;
   window.open(`https://wa.me/?text=${encodeURIComponent(text + `\n\n${location.origin}/#/news`)}`, '_blank');
 }
+// ---------- what's new in the app (P190) ----------
+// Newest first. `en` is shown on the page, `sr` goes into the WhatsApp message (Serbian latin, no diacritics).
+const UPDATES = [
+  { date: '2026-10-11', title: 'Watch instead of play', en: [
+    'Not playing this week? Tap 👀 NOT PLAYING, COMING TO WATCH on the match page.',
+    'Everyone who watched can vote man of the match and rate the players after the game.',
+  ], sr: [
+    'Ne igras ove nedelje? Klikni 👀 NOT PLAYING, COMING TO WATCH na stranici utakmice.',
+    'Ko je gledao moze da glasa za igraca utakmice i da oceni igrace posle meca.',
+  ] },
+  { date: '2026-10-10', title: 'Fairer teams, keepers protected', en: [
+    'Auto-balance now uses ability plus recent form (team-mate ratings) and checks every possible split.',
+    'Only keepers matter for positions: the two goalkeepers always go to different teams.',
+    '🔀 Shuffle gives another split that is just as fair. Team strength is shown under the pitch.',
+    'Keeper points can no longer go below 0, and they only count when the clock was used.',
+    'Spectators can sign up to watch, then vote man of the match and rate players.',
+    'The rate page shows each player\'s ability next to their name.',
+  ], sr: [
+    'Auto-balance sada gleda ability + formu (ocene saigraca) i proverava svaku mogucu podelu.',
+    'Od pozicija je bitan samo golman: dva golmana su uvek u razlicitim timovima.',
+    '🔀 Shuffle daje drugu, isto tako fer podelu. Jacina timova se vidi ispod terena.',
+    'Golmanski poeni vise ne mogu ispod 0, i racunaju se samo kad je sat pokrenut.',
+    'Gledaoci mogu da se prijave da gledaju, pa da glasaju za igraca utakmice i ocenjuju igrace.',
+    'Na stranici za ocenjivanje se vidi ability svakog igraca.',
+  ] },
+  { date: '2026-10-01', title: 'Spectators', en: [
+    'Spectators can log in, follow the game, keep the live score and predict, without signing up to play.',
+  ], sr: [
+    'Gledaoci mogu da se uloguju, prate mec, vode live rezultat i prognoziraju, bez prijave za igru.',
+  ] },
+  { date: '2026-09-30', title: 'Player ratings and your to-do', en: [
+    'After full time, rate your team-mates 1–10 for 72 hours. Averages are revealed when rating closes.',
+    '"Your to-do" on the main page reminds you to vote, rate and predict.',
+  ], sr: [
+    'Posle meca ocenite saigrace od 1 do 10, imate 72 sata. Proseci se vide kad se ocenjivanje zatvori.',
+    '"Your to-do" na pocetnoj te podseca da glasas, ocenis i prognoziras.',
+  ] },
+  { date: '2026-09', title: 'The first month', en: [
+    'Sign up IN/OUT with a waiting list, teams with auto-balance, live score with goal times.',
+    'Points and league table, man of the match vote, news, badges, score predictions.',
+    'Guests, profiles, head-to-head, WhatsApp reports.',
+  ], sr: [
+    'Prijava IN/OUT sa listom cekanja, timovi sa auto-balance, live rezultat sa vremenom golova.',
+    'Poeni i tabela, glasanje za igraca utakmice, vesti, bedzevi, prognoze rezultata.',
+    'Gosti, profili, medjusobni skor, izvestaji za WhatsApp.',
+  ] },
+];
+const updDate = (d) => (d.length === 7 ? `${MONTHS[Number(d.slice(5)) - 1]} ${d.slice(0, 4)}` : fmtDate(d + 'T12:00'));
+function viewUpdates() {
+  const v = mount('news');
+  v.innerHTML = `<div class="panel"><div class="panel-h">What's new in the app<span class="spacer"></span><a class="btn sm" href="#/news">‹ News</a></div>
+    <div class="panel-b">${UPDATES.map((u, i) => `<div class="upd">
+      <div class="upd-h"><span class="y">${esc(updDate(u.date))}</span> <b>${esc(u.title.toUpperCase())}</b><span class="spacer"></span>
+        <button class="btn sm" data-upd="${i}">Share to WhatsApp</button></div>
+      <ul>${u.en.map((x) => `<li>${esc(x)}</li>`).join('')}</ul></div>`).join('')}</div></div>`;
+  $$('[data-upd]', v).forEach((b) => (b.onclick = () => {
+    const u = UPDATES[Number(b.dataset.upd)];
+    const text = `📺 *FUDBAL TEXT P190*\n🆕 *STA JE NOVO* (${updDate(u.date)})\n\n${u.sr.map((x) => `• ${x}`).join('\n')}\n\n${location.origin}/#/updates`;
+    window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
+  }));
+}
+
 function newsForm(n, done) {
   n = n || { title: '', body: '', pinned: false };
   modal(n.id ? 'Edit announcement' : 'New announcement', `
@@ -715,7 +780,7 @@ async function viewNews() {
   const r = await loadNews();
   const seenBefore = newsSeen();
   const draw = () => {
-    v.innerHTML = `<div class="panel"><div class="panel-h">News<span class="spacer"></span>${S.me.is_admin ? '<button class="btn sm primary" id="newpost">+ Announcement</button>' : ''}</div>
+    v.innerHTML = `<div class="panel"><div class="panel-h">News<span class="spacer"></span><a class="btn sm" href="#/updates">What's new in the app ›</a> ${S.me.is_admin ? '<button class="btn sm primary" id="newpost">+ Announcement</button>' : ''}</div>
       <div class="panel-b">${S.news.map((n) => newsItem(n, true)).join('') || '<div class="empty-state"><div class="ico">NO NEWS</div><p>Nothing announced yet.</p></div>'}</div></div>`;
     const np = $('#newpost', v);
     if (np) np.onclick = () => newsForm(null, reload);

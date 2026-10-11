@@ -302,9 +302,9 @@ const voteClosesAt = (m) => {
   return new Date(base.getTime() + VOTE_HOURS * 3600e3).toISOString();
 };
 const playedIds = (matchId) => new Set(db.prepare('SELECT player_id FROM lineups WHERE match_id=?').all(matchId).map((r) => r.player_id));
-// spectators who marked themselves as watching this match: they may vote MOTM and rate too
+// people who marked themselves as watching this match (spectators, or players sitting a week out): they may vote MOTM and rate too
 const watcherIds = (matchId) => new Set(db.prepare(`SELECT a.player_id FROM attendance a JOIN players p ON p.id=a.player_id
-  WHERE a.match_id=? AND a.status='watch' AND p.is_spectator=1 AND p.active=1`).all(matchId).map((r) => r.player_id));
+  WHERE a.match_id=? AND a.status='watch' AND p.active=1`).all(matchId).map((r) => r.player_id));
 const motmWinners = (matchId) => {
   const rows = db.prepare('SELECT player_id, COUNT(*) AS n FROM motm_votes WHERE match_id=? GROUP BY player_id ORDER BY n DESC').all(matchId);
   if (!rows.length) return [];
@@ -501,9 +501,6 @@ route('PUT', '/api/players/:id', (req, res, { user, body, params }) => {
     db.prepare(`DELETE FROM attendance WHERE player_id=? AND match_id IN (SELECT id FROM matches WHERE status='upcoming')`).run(ex.id);
     db.prepare(`DELETE FROM lineups WHERE player_id=? AND match_id IN (SELECT id FROM matches WHERE status='upcoming')`).run(ex.id);
   }
-  // ...and a spectator who becomes a player drops their "watching" marks on upcoming matches
-  if (!f.is_spectator && ex.is_spectator)
-    db.prepare(`DELETE FROM attendance WHERE player_id=? AND status='watch' AND match_id IN (SELECT id FROM matches WHERE status='upcoming')`).run(ex.id);
   if (f.pin) {
     db.prepare('UPDATE players SET pin_hash=? WHERE id=?').run(hashPw(f.pin), ex.id);
     if (ex.id !== user.id) db.prepare('DELETE FROM sessions WHERE player_id=?').run(ex.id);
@@ -587,7 +584,7 @@ route('POST', '/api/matches/:id/attendance', (req, res, { user, body, params }) 
   if (m.status !== 'upcoming' && !user.is_admin) bad('This match is closed');
   const spec = !!db.prepare('SELECT is_spectator FROM players WHERE id=?').get(pid)?.is_spectator;
   if (spec && ['in', 'out'].includes(body.status)) bad("Spectators don't sign up to play — ask an admin to make you a player");
-  if (!spec && body.status === 'watch') bad('Only spectators can sign up to watch');
+  if (body.status === 'watch' && db.prepare('SELECT is_guest FROM players WHERE id=?').get(pid)?.is_guest) bad("Guests can't sign up to watch");
   const status = body.status;
   // Dropping out less than 24h before kick-off is remembered (for the "Late dropper" badge). Re-joining clears it.
   const prev = db.prepare('SELECT status FROM attendance WHERE match_id=? AND player_id=?').get(m.id, pid);
