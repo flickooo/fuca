@@ -702,6 +702,11 @@ function newsShare(n) {
 // ---------- what's new in the app (P190) ----------
 // Newest first. `en` is shown on the page, `sr` goes into the WhatsApp message (Serbian latin, no diacritics).
 const UPDATES = [
+  { date: '2026-10-13', title: 'Auto-balance includes the waiting list', en: [
+    'Everyone who is IN is now split into teams, the waiting list too. Extra players go on the bench and rotate in.',
+  ], sr: [
+    'Auto-balance sada deli sve koji su IN, i one sa liste cekanja. Visak igraca ide na klupu i ulazi u rotaciji.',
+  ] },
   { date: '2026-10-13', title: 'In goal or outfield this week', en: [
     'Keepers can choose 🧤 In goal or ⚽ Outfield for each match, right under the IN button.',
     'Admins can switch anyone on the Teams page, so an outfield player can volunteer in goal.',
@@ -1130,7 +1135,7 @@ function renderTactics(v) {
     <span class="sub">${m.team_size} v ${m.team_size}${ed ? (m.lineup_published ? ' · <b class="g">Published</b>' : ' · Draft (only admins see it)') : ''}</span></div>
     ${ed ? `<div class="panel-b btn-row" style="justify-content:space-between">
       <div class="btn-row">
-        <button class="btn" id="auto" title="Split the IN players into the fairest two teams (ability + recent form, keepers apart)">⚖ Auto-balance</button>
+        <button class="btn" id="auto" title="Split everyone who is IN (waiting list too) into the fairest two teams (ability + recent form, keepers apart)">⚖ Auto-balance</button>
         <button class="btn" id="shuffle" title="Another split that is just as fair">🔀 Shuffle</button>
         <button class="btn ghost" id="clear">Clear</button>
       </div>
@@ -1294,7 +1299,8 @@ function balanceSplit(players, shuffle, prevKey) {
 
 function autoBalance(T, shuffle) {
   // this match's role counts, not the profile: keepers playing outfield are normal players, volunteers in goal are keepers
-  const players = T.m.attendance.filter((a) => a.status === 'in' && !a.reserve).map((a) => S.pmap[a.player_id]).filter(Boolean)
+  // everyone who is IN counts, waiting list included: we rotate, so extras go on the bench and still play
+  const players = T.m.attendance.filter((a) => a.status === 'in').map((a) => S.pmap[a.player_id]).filter(Boolean)
     .map((p) => { const ep = effPos(T.m, p); return { ...p, position: ep === 'OUT' ? 'MID' : ep }; });
   const prevKey = Object.entries(T.asg).filter(([k]) => k.startsWith('A:')).map(([, pid]) => pid).sort((x, y) => x - y).join(',');
   const [A, B] = balanceSplit(players, shuffle, prevKey);
