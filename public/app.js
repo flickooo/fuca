@@ -33,6 +33,11 @@ const stars = (n) => `<span class="abl"><b class="${ablCls(n)}">${n}</b><span cl
 const ablOptions = (cur) => Array.from({ length: 11 }, (_, x) => `<option value="${x}" ${x === cur ? 'selected' : ''}>${x} ${'▮'.repeat(x)}${'▯'.repeat(10 - x)}</option>`).join('');
 const fmtPts = (x) => (Math.round(x * 100) / 100).toString();
 const posBadge = (p) => `<span class="pos ${esc(p)}">${esc(p)}</span>`;
+// in goal this match? attendance.role ('gk' / 'out') overrides the usual position for one match
+const inGoal = (m, pid) => { const a = m.attendance.find((x) => x.player_id === pid); return a?.role ? a.role === 'gk' : S.pmap[pid]?.position === 'GK'; };
+// position used for this match: GK if in goal, OUT for a keeper playing outfield, else the usual one
+const effPos = (m, p) => (inGoal(m, p.id) ? 'GK' : p.position === 'GK' ? 'OUT' : p.position);
+const roleTag = (m, pid) => { const e = effPos(m, S.pmap[pid]); return e === 'GK' ? ' <span title="In goal this match">🧤</span>' : e === 'OUT' ? ' <span title="Keeper playing outfield this match">⚽</span>' : ''; };
 const initials = (name) => name.replace(/\(.*?\)/g, ' ').split(/\s+/).filter((w) => /^\p{L}/u.test(w)).map((w) => w[0]).join('').slice(0, 3).toUpperCase() || name.trim()[0].toUpperCase();
 const shortName = (name) => { const w = name.replace(/\(.*?\)/g, ' ').trim().split(/\s+/).filter(Boolean); return w.length > 1 ? w[w.length - 1] : (w[0] || name); };
 
@@ -201,7 +206,7 @@ function squadRows(m) {
     const paid = st === 'in' || st === 'res' || (a && a.paid)
       ? (admin ? `<button class="paytog ${a.paid ? 'on' : 'off'}" data-paid="${pid}" data-v="${a.paid ? 0 : 1}">${a.paid ? 'PAID' : 'PAID?'}</button>`
         : a.paid ? '<span class="g">PAID</span>' : '') : '';
-    return `<tr class="${pid === S.me.id ? 'sel' : ''}"><td class="num dim">${i ?? ''}</td><td>${icon}</td><td class="name"><a class="plink" href="#/player/${pid}">${esc(p.name)}</a>${p.is_guest ? ` <span class="tag guest">GUEST</span>${a?.invited_by ? ` <span class="dim">+${esc(pname(a.invited_by))}</span>` : ''}${admin || a?.invited_by === S.me.id ? ` <button class="x" data-rmguest="${pid}" title="Remove guest">✕</button>` : ''}` : ''}</td><td class="hide-sm">${posBadge(p.position)}</td><td class="hide-sm">${stars(p.rating)}</td><td>${paid}</td><td class="num">${ctl}</td></tr>`;
+    return `<tr class="${pid === S.me.id ? 'sel' : ''}"><td class="num dim">${i ?? ''}</td><td>${icon}</td><td class="name"><a class="plink" href="#/player/${pid}">${esc(p.name)}</a>${st === 'in' || st === 'res' ? roleTag(m, pid) : ''}${p.is_guest ? ` <span class="tag guest">GUEST</span>${a?.invited_by ? ` <span class="dim">+${esc(pname(a.invited_by))}</span>` : ''}${admin || a?.invited_by === S.me.id ? ` <button class="x" data-rmguest="${pid}" title="Remove guest">✕</button>` : ''}` : ''}</td><td class="hide-sm">${posBadge(p.position)}</td><td class="hide-sm">${stars(p.rating)}</td><td>${paid}</td><td class="num">${ctl}</td></tr>`;
   };
   const div = (t, n) => `<tr class="divider"><td colspan="7">${t} (${n})</td></tr>`;
   return `
@@ -255,7 +260,10 @@ async function viewMatch(id, focus) {
               <div class="muted" style="text-align:center">${
                 !mine ? 'You haven\'t replied yet.' : mine.reserve ? '<span class="y">WAITING LIST</span> — you\'ll move up if someone drops out.' :
                 mine.status === 'in' ? '<span class="g flash">YOU\'RE IN.</span> See you on the pitch!' :
-                mine.status === 'watch' ? '<span class="c">👀 WATCHING.</span> You can vote man of the match and rate players after the game.' : 'You\'re marked as not coming.'}</div>` : ''}
+                mine.status === 'watch' ? '<span class="c">👀 WATCHING.</span> You can vote man of the match and rate players after the game.' : 'You\'re marked as not coming.'}</div>
+              ${mine?.status === 'in' && S.me.position === 'GK' ? `<div class="gkchoice"><span class="dim">This week:</span>
+                <button class="btn sm ${inGoal(m, S.me.id) ? 'primary' : 'ghost'}" data-myrole="gk">🧤 In goal</button>
+                <button class="btn sm ${inGoal(m, S.me.id) ? 'ghost' : 'primary'}" data-myrole="out">⚽ Outfield</button></div>` : ''}` : ''}
           </div>
         </div>
         ${m.goals.length || played ? `<div class="panel"><div class="panel-h">${played ? 'Result' : 'Goals'}<span class="spacer"></span>${played ? '<button class="btn sm" id="report">Share report</button>' : ''}</div><div class="panel-b">${m.goals.length ? scorersHtml(m) + goalTimeline(m) : '<span class="dim">No goals were recorded live.</span>'}${pointsHtml(m)}</div></div>` : ''}
@@ -278,6 +286,9 @@ async function viewMatch(id, focus) {
     $$('[data-st]', v).forEach((b) => (b.onclick = async () => {
       const st = b.dataset.st === m.my_status ? 'none' : b.dataset.st;
       try { const r = await api('POST', `/api/matches/${m.id}/attendance`, { status: st }); render(r.match); } catch (e) { fail(e); }
+    }));
+    $$('[data-myrole]', v).forEach((b) => (b.onclick = async () => {
+      try { const r = await api('POST', `/api/matches/${m.id}/role`, { role: b.dataset.myrole }); render(r.match); toast(b.dataset.myrole === 'gk' ? 'In goal this week' : 'Outfield this week'); } catch (e) { fail(e); }
     }));
     $$('.admin-status', v).forEach((s) => (s.onchange = async () => {
       try { const r = await api('POST', `/api/matches/${m.id}/attendance`, { status: s.value, player_id: Number(s.dataset.pid) }); render(r.match); toast('Updated'); } catch (e) { fail(e); }
@@ -691,6 +702,15 @@ function newsShare(n) {
 // ---------- what's new in the app (P190) ----------
 // Newest first. `en` is shown on the page, `sr` goes into the WhatsApp message (Serbian latin, no diacritics).
 const UPDATES = [
+  { date: '2026-10-13', title: 'In goal or outfield this week', en: [
+    'Keepers can choose 🧤 In goal or ⚽ Outfield for each match, right under the IN button.',
+    'Admins can switch anyone on the Teams page, so an outfield player can volunteer in goal.',
+    'Auto-balance follows this week\'s choice, and the squad list shows 🧤 / ⚽ next to the name.',
+  ], sr: [
+    'Golmani mogu da izaberu 🧤 In goal ili ⚽ Outfield za svaki mec, odmah ispod IN dugmeta.',
+    'Admini mogu da promene za bilo koga na Teams stranici, pa i igrac iz polja moze da stane na gol.',
+    'Auto-balance prati izbor za tu nedelju, a u listi igraca se vidi 🧤 / ⚽ pored imena.',
+  ] },
   { date: '2026-10-11', title: 'Watch instead of play', en: [
     'Not playing this week? Tap 👀 NOT PLAYING, COMING TO WATCH on the match page.',
     'Everyone who watched can vote man of the match and rate the players after the game.',
@@ -1094,7 +1114,8 @@ function renderTactics(v) {
     const role = bench ? 'SUB' : s.role;
     return `<div class="slot ${team} ${p ? '' : 'empty'} ${role === 'GK' ? 'gk' : ''} ${sel ? 'sel' : ''} ${target ? 'target' : ''}" data-key="${key}" ${style} ${ed && p ? 'draggable="true"' : ''}>
       <div class="shirt">${p ? esc(initials(p.name)) : role}</div><div class="nm">${p ? esc(shortName(p.name)) : ed ? '+' : ''}</div>
-      ${p ? `<div class="pa ${!bench && p.position !== role ? 'oop' : ''}" title="${!bench && p.position !== role ? `Natural ${p.position}, playing ${role}` : ''}"><span class="pos ${p.position}">${p.position}</span><span class="an ${ablCls(p.rating)}">${p.rating}</span></div>` : ''}</div>`;
+      ${p ? (() => { const ep = effPos(T.m, p), oop = !bench && ep !== role && !(ep === 'OUT' && role !== 'GK');
+        return `<div class="pa ${oop ? 'oop' : ''}" title="${oop ? `Natural ${ep}, playing ${role}` : ''}"><span class="pos ${ep}">${ep === 'OUT' ? '⚽' : ep}</span><span class="an ${ablCls(p.rating)}">${p.rating}</span></div>`; })() : ''}</div>`;
   };
   const benchSlots = (team) => Array.from({ length: BENCH }, (_, i) => slotHtml(team, { slot: 100 + i }, true)).join('');
   const sum = (team) => Object.entries(T.asg).filter(([k]) => k.startsWith(team + ':')).map(([, pid]) => (S.pmap[pid] ? strength(S.pmap[pid]) : 0));
@@ -1150,15 +1171,16 @@ function renderTactics(v) {
     </div>
     <div class="side">
       <div class="panel drop-pool" id="pool"><div class="panel-h">Available players<span class="spacer"></span><span class="sub">${pool.filter((a) => !a.placed).length} unassigned</span></div>
-        <div class="table-wrap"><table class="fm"><thead><tr><th></th><th>Name</th><th>Pos</th><th>Ability</th><th class="num" title="Ability mixed with recent form">Str</th><th>Team</th></tr></thead><tbody>
+        <div class="table-wrap"><table class="fm"><thead><tr><th></th><th>Name</th><th>Pos</th><th title="In goal or outfield this match">🧤</th><th>Ability</th><th class="num" title="Ability mixed with recent form">Str</th><th>Team</th></tr></thead><tbody>
         ${pool.map((a) => {
           const tm = teamOf(T, a.player_id);
           return `<tr class="${ed ? 'click' : ''} ${selPid === a.player_id ? 'sel' : ''} ${a.placed && selPid !== a.player_id ? 'placed' : ''}" data-pid="${a.player_id}" ${ed ? 'draggable="true"' : ''}>
             <td>${a.reserve ? '<span class="st res" title="Reserve">RES</span>' : '<span class="st in">IN</span>'}</td>
-            <td class="name">${esc(a.p.name)}</td><td>${posBadge(a.p.position)}</td><td>${stars(a.p.rating)}</td>
+            <td class="name">${esc(a.p.name)}</td><td>${posBadge(a.p.position)}</td>
+            <td>${ed ? `<button class="gktog ${inGoal(m, a.player_id) ? 'on' : ''}" data-gk="${a.player_id}" title="Tap to switch: in goal / outfield this match">${inGoal(m, a.player_id) ? '🧤' : '⚽'}</button>` : inGoal(m, a.player_id) ? '🧤' : ''}</td><td>${stars(a.p.rating)}</td>
             <td class="num" title="${a.p.form != null && a.p.form_n >= FORM_MIN_GAMES ? `Form ${a.p.form.toFixed(1)} over ${a.p.form_n} games` : 'Not enough ratings yet — ability only'}"><span class="${ablCls(strength(a.p))}">${fmt1(strength(a.p))}</span></td>
             <td>${tm ? `<span class="chip-team ${tm[0]}"></span> ${Number(tm[1]) >= 100 ? '<span class="dim">sub</span>' : ''}` : '<span class="dim">—</span>'}</td></tr>`;
-        }).join('') || '<tr><td colspan="6" class="muted">Nobody has signed up yet.</td></tr>'}
+        }).join('') || '<tr><td colspan="7" class="muted">Nobody has signed up yet.</td></tr>'}
         </tbody></table></div>
       </div>
       <a class="btn ghost" href="#/match/${m.id}" style="margin-top:8px">‹ Back to match</a>
@@ -1178,6 +1200,12 @@ function renderTactics(v) {
   const wa = $('#wa'); if (wa) wa.onclick = () => shareLineup(m, Object.entries(T.asg).map(([k, pid]) => ({ team: k[0], slot: Number(k.slice(2)), player_id: pid })));
   const ua = $('#unassign'); if (ua) ua.onclick = () => { delete T.asg[T.sel.key]; T.sel = null; T.dirty = true; rerender(); };
 
+  $$('[data-gk]', v).forEach((b) => (b.onclick = async (e) => {
+    e.stopPropagation();
+    const pid = Number(b.dataset.gk);
+    try { const r = await api('POST', `/api/matches/${m.id}/role`, { player_id: pid, role: inGoal(m, pid) ? 'out' : 'gk' }); T.m = r.match; rerender(); }
+    catch (err) { fail(err); }
+  }));
   // tap interactions
   $$('#pool tr[data-pid]', v).forEach((tr) => (tr.onclick = () => {
     const pid = Number(tr.dataset.pid);
@@ -1265,7 +1293,9 @@ function balanceSplit(players, shuffle, prevKey) {
 }
 
 function autoBalance(T, shuffle) {
-  const players = T.m.attendance.filter((a) => a.status === 'in' && !a.reserve).map((a) => S.pmap[a.player_id]).filter(Boolean);
+  // this match's role counts, not the profile: keepers playing outfield are normal players, volunteers in goal are keepers
+  const players = T.m.attendance.filter((a) => a.status === 'in' && !a.reserve).map((a) => S.pmap[a.player_id]).filter(Boolean)
+    .map((p) => { const ep = effPos(T.m, p); return { ...p, position: ep === 'OUT' ? 'MID' : ep }; });
   const prevKey = Object.entries(T.asg).filter(([k]) => k.startsWith('A:')).map(([, pid]) => pid).sort((x, y) => x - y).join(',');
   const [A, B] = balanceSplit(players, shuffle, prevKey);
   // who can cover a role if nobody has that exact position (best fit first)

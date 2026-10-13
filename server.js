@@ -132,6 +132,8 @@ addCol('players', 'is_guest', 'INTEGER NOT NULL DEFAULT 0');
 addCol('players', 'is_spectator', 'INTEGER NOT NULL DEFAULT 0');
 addCol('sessions', 'elevated', 'INTEGER NOT NULL DEFAULT 0');
 addCol('attendance', 'invited_by', 'INTEGER');
+// this week only: 'gk' = plays in goal, 'out' = plays outfield; NULL = follow the player's position
+addCol('attendance', 'role', 'TEXT');
 
 // ---------- helpers ----------
 const normPhone = (p) => {
@@ -377,11 +379,11 @@ const ratingInfo = (m, user) => {
 const matchDetail = (id, user) => {
   const m = db.prepare('SELECT * FROM matches WHERE id=?').get(id);
   if (!m) throw new HttpError(404, 'Match not found');
-  const att = db.prepare(`SELECT a.player_id, a.status, a.updated_at, a.paid, a.invited_by FROM attendance a JOIN players p ON p.id=a.player_id
+  const att = db.prepare(`SELECT a.player_id, a.status, a.updated_at, a.paid, a.invited_by, a.role FROM attendance a JOIN players p ON p.id=a.player_id
     WHERE a.match_id=? AND p.active=1 ORDER BY a.updated_at ASC`).all(id);
   const cap = m.team_size * 2;
   let n = 0;
-  const attendance = att.map((a) => ({ player_id: a.player_id, status: a.status, at: a.updated_at, paid: !!a.paid, invited_by: a.invited_by, reserve: a.status === 'in' ? ++n > cap : false }));
+  const attendance = att.map((a) => ({ player_id: a.player_id, status: a.status, at: a.updated_at, paid: !!a.paid, invited_by: a.invited_by, role: a.role || null, reserve: a.status === 'in' ? ++n > cap : false }));
   const showLineup = m.lineup_published || user.is_admin;
   const lineup = showLineup ? db.prepare('SELECT player_id, team, slot FROM lineups WHERE match_id=?').all(id) : [];
   const mine = att.find((a) => a.player_id === user.id);
@@ -601,7 +603,10 @@ route('POST', '/api/matches/:id/attendance', (req, res, { user, body, params }) 
         ON CONFLICT(match_id,player_id) DO UPDATE SET status=excluded.status, updated_at=excluded.updated_at`).run(m.id, pid, status);
     }
   } else bad('Status must be in or out');
-  if (status !== 'in') db.prepare('DELETE FROM lineups WHERE match_id=? AND player_id=?').run(m.id, pid);
+  if (status !== 'in') {
+    db.prepare('DELETE FROM lineups WHERE match_id=? AND player_id=?').run(m.id, pid);
+    db.prepare('UPDATE attendance SET role=NULL WHERE match_id=? AND player_id=?').run(m.id, pid);
+  }
   send(res, 200, { match: matchDetail(m.id, user) });
 });
 
@@ -636,6 +641,26 @@ route('POST', '/api/matches/:id/paid', (req, res, { user, body, params }) => {
   const r = db.prepare('UPDATE attendance SET paid=? WHERE match_id=? AND player_id=?').run(body.paid ? 1 : 0, Number(params.id), Number(body.player_id));
   if (!r.changes) bad('That player has not signed up for this match');
   send(res, 200, { match: matchDetail(Number(params.id), user) });
+});
+
+// In goal or outfield for this match only. Keepers choose for themselves; admins can set it for anyone
+// (e.g. an outfield player volunteering in goal).
+route('POST', '/api/matches/:id/role', (req, res, { user, body, params }) => {
+  const m = db.prepare('SELECT * FROM matches WHERE id=?').get(Number(params.id));
+  if (!m) throw new HttpError(404, 'Match not found');
+  const pid = body.player_id != null ? Number(body.player_id) : user.id;
+  const p = db.prepare('SELECT * FROM players WHERE id=?').get(pid);
+  if (!p) throw new HttpError(404, 'Player not found');
+  if (!user.is_admin) {
+    if (pid !== user.id) throw new HttpError(403, 'Admins only');
+    if (p.position !== 'GK') bad('Only goalkeepers can choose this — ask an admin');
+    if (m.status !== 'upcoming') bad('This match is closed');
+  }
+  if (!['gk', 'out', null].includes(body.role ?? null)) bad('Role must be gk or out');
+  const role = (body.role ?? null) === (p.position === 'GK' ? 'gk' : 'out') ? null : body.role ?? null; // same as usual = no override
+  const r = db.prepare(`UPDATE attendance SET role=? WHERE match_id=? AND player_id=? AND status='in'`).run(role, m.id, pid);
+  if (!r.changes) bad('Only players who are IN can choose this');
+  send(res, 200, { match: matchDetail(m.id, user) });
 });
 
 // ---------- routes: live goals (any logged-in player) ----------
