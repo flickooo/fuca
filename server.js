@@ -762,17 +762,28 @@ route('POST', '/api/matches/:id/reset-live', (req, res, { user, params }) => {
   send(res, 200, { match: matchDetail(m.id, user) });
 });
 
-route('POST', '/api/matches/:id/fulltime', (req, res, { user, params }) => {
+// Full time. body: {} = now, { minutes_ago: n } or { at: ISO } when someone forgot to press it.
+// Admins can also move the full-time of a finished match.
+route('POST', '/api/matches/:id/fulltime', (req, res, { user, body, params }) => {
   const m = liveMatch(Number(params.id));
-  if (!user.is_admin) {
-    const started = m.kicked_off_at ? new Date(m.kicked_off_at) : null;
-    if (!started || Date.now() - started.getTime() < 30 * 60e3) throw new HttpError(403, 'Only an admin can end the match this early');
+  let t = Date.now();
+  if (body.minutes_ago != null) t -= int(body.minutes_ago, 'Minutes', 0, 180) * 60e3;
+  else if (body.at) { t = Date.parse(body.at); if (!Number.isFinite(t)) bad('Bad time'); }
+  if (t > Date.now() + 60e3) bad('Full time can\'t be in the future');
+  const started = m.kicked_off_at ? Date.parse(m.kicked_off_at) : null;
+  if (started && t <= started) bad('Full time must be after kick-off');
+  const last = db.prepare('SELECT MAX(created_at) AS t FROM goals WHERE match_id=?').get(m.id).t;
+  if (last && t < Date.parse(last)) bad('Full time must be after the last goal — pick a later time');
+  if (m.status === 'played') {
+    if (body.minutes_ago == null && !body.at) return send(res, 200, { match: matchDetail(m.id, user) });
+    requireAdmin(user);
+    db.prepare('UPDATE matches SET ended_at=? WHERE id=?').run(new Date(t).toISOString(), m.id);
+    return send(res, 200, { match: matchDetail(m.id, user) });
   }
-  if (m.status !== 'played') {
-    syncScore(m.id);
-    db.prepare(`UPDATE matches SET status='played', ended_at=? WHERE id=?`).run(new Date().toISOString(), m.id);
-    try { announceMilestones(); } catch (e) { console.error(e); }
-  }
+  if (!user.is_admin && (!started || t - started < 30 * 60e3)) throw new HttpError(403, 'Only an admin can end the match this early');
+  syncScore(m.id);
+  db.prepare(`UPDATE matches SET status='played', ended_at=? WHERE id=?`).run(new Date(t).toISOString(), m.id);
+  try { announceMilestones(); } catch (e) { console.error(e); }
   send(res, 200, { match: matchDetail(m.id, user) });
 });
 

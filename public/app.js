@@ -574,13 +574,13 @@ async function viewLive(id) {
       ${!m.clock_started && (!ended || S.me.is_admin) ? `<div class="kobox">
         <button class="btn primary ko-btn ${ended ? '' : 'flash-bg'}" id="ko">▶ ${m.goals.length || ended ? 'Set kick-off time' : 'Kick off'}</button>
         <div class="dim">${m.goals.length || ended ? 'The clock wasn\'t started — goalkeepers only earn clean-minute points once you set when the game began.' : 'Press when the game starts. It runs the match clock and the goalkeepers\' clean-minute points.'}</div></div>` : ''}
-      <div class="clk">${ended ? 'FULL TIME' : m.clock_started ? `${elapsed}' · tap the scorer` : 'Tap a scorer to record a goal'}</div>
+      <div class="clk">${ended ? `FULL TIME${m.ended_at && m.kicked_off_at ? ` · ${Math.round((Date.parse(m.ended_at) - Date.parse(m.kicked_off_at)) / 60000)}'` : ''}` : m.clock_started ? `${elapsed}' · tap the scorer` : 'Tap a scorer to record a goal'}</div>
       <div class="cols">${col('A')}${col('B')}</div>
       ${m.goals.length ? `<div class="panel-h" style="margin-top:12px">Goals<span class="spacer"></span><span class="sub">tap to fix assist · ✕ to undo</span></div><div class="feed">${feed}</div>` : ''}
       <div class="btn-row" style="margin-top:14px;justify-content:space-between">
         <a class="btn ghost" href="#/tactics/${m.id}">‹ Teams</a>
         ${S.me.is_admin && m.status === 'upcoming' && (m.clock_started || m.goals.length) ? '<button class="btn sm danger" id="resetlive">Reset kick-off</button>' : ''}
-        ${!ended ? `<button class="btn primary" id="ft">Full time</button>` : ''}
+        ${!ended ? `<button class="btn primary" id="ft">Full time</button>` : S.me.is_admin && m.kicked_off_at ? '<button class="btn sm" id="ftfix">Change full-time</button>' : ''}
       </div>
     </div>${sheetHtml}`;
 
@@ -640,11 +640,44 @@ async function viewLive(id) {
       if (!confirm(`Reset this match to "not started"?${m.goals.length ? `\n\nThe ${m.goals.length} recorded goal${m.goals.length > 1 ? 's' : ''} will be deleted.` : ''}\nPredictions open again.`)) return;
       try { m = (await api('POST', `/api/matches/${m.id}/reset-live`)).match; toast('Match reset'); draw(); } catch (err) { fail(err); }
     };
+    // full time; if the clock has run long (or it's a correction), ask when the game really ended
+    const endAt = (fixing) => {
+      const goFt = async (body) => {
+        try {
+          m = (await api('POST', `/api/matches/${m.id}/fulltime`, body)).match;
+          if (fixing) { toast('Full time changed'); draw(); } else location.hash = `#/match/${m.id}`;
+          return true;
+        } catch (err) { fail(err); return false; }
+      };
+      const ko = m.kicked_off_at ? Date.parse(m.kicked_off_at) : null;
+      const lastGoal = m.goals.length ? Math.max(...m.goals.map((g) => Date.parse(g.created_at))) : null;
+      const ok = (t) => (!ko || t > ko) && (!lastGoal || t >= lastGoal);
+      const d = fixing && m.ended_at ? dt(m.ended_at) : new Date(ko ? Math.min(Date.now(), ko + 60 * 60e3) : Date.now()), p2 = (n) => String(n).padStart(2, '0');
+      modal(fixing ? 'When did the game end?' : `End the match at ${m.score_a ?? 0}-${m.score_b ?? 0}?`, `
+        ${fixing ? '' : `<p>The clock says <span class="y">${elapsed}'</span>. If you forgot to press Full time, pick when the game really ended.</p>
+        <div class="grid2b">${[0, 10, 15, 20, 30, 45, 60].filter((x) => ok(Date.now() - x * 60e3))
+          .map((x) => `<button class="btn${x ? '' : ' primary'}" data-ftago="${x}">${x ? x + ' min ago' : 'Just now'}</button>`).join('')}</div>
+        <div class="c" style="margin:12px 0 4px">OR EXACT TIME</div>`}
+        <form id="ftf" class="btn-row"><input type="date" name="d" value="${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}" style="max-width:170px">
+          <input type="time" name="t" value="${p2(d.getHours())}:${p2(d.getMinutes())}" style="max-width:120px" required><button class="btn primary">Set</button></form>
+        <p class="dim" style="font-size:17px">${ko ? `Kick-off was at <span class="y">${fmtTime(m.kicked_off_at)}</span>.` : ''}${lastGoal ? ` Last goal at <span class="y">${fmtTime(new Date(lastGoal).toISOString())}</span>.` : ''}
+          ${fixing ? '' : ' Man-of-the-match voting opens.'}</p>`, (root, close) => {
+        $$('[data-ftago]', root).forEach((b) => (b.onclick = async () => { if (await goFt({ minutes_ago: Number(b.dataset.ftago) })) close(); }));
+        $('#ftf', root).onsubmit = async (e) => { e.preventDefault(); const f = e.target;
+          if (await goFt({ at: new Date(`${f.d.value}T${f.t.value}`).toISOString() })) close(); };
+      });
+    };
     const ft = $('#ft', v);
     if (ft) ft.onclick = async () => {
-      if (!confirm(`End the match at ${m.score_a ?? 0}-${m.score_b ?? 0}? Man-of-the-match voting opens.`)) return;
-      try { m = (await api('POST', `/api/matches/${m.id}/fulltime`)).match; location.hash = `#/match/${m.id}`; } catch (err) { fail(err); }
+      if (elapsed == null || elapsed < 65) {
+        if (!confirm(`End the match at ${m.score_a ?? 0}-${m.score_b ?? 0}? Man-of-the-match voting opens.`)) return;
+        try { m = (await api('POST', `/api/matches/${m.id}/fulltime`)).match; location.hash = `#/match/${m.id}`; } catch (err) { fail(err); }
+        return;
+      }
+      endAt(false);
     };
+    const ftfix = $('#ftfix', v);
+    if (ftfix) ftfix.onclick = () => endAt(true);
   };
   draw();
 
@@ -702,6 +735,13 @@ function newsShare(n) {
 // ---------- what's new in the app (P190) ----------
 // Newest first. `en` is shown on the page, `sr` goes into the WhatsApp message (Serbian latin, no diacritics).
 const UPDATES = [
+  { date: '2026-10-15', title: 'Forgot to press Full time?', en: [
+    'If the clock has run past 65 minutes, Full time asks when the game really ended: just now, minutes ago, or an exact time.',
+    'Admins can change the full-time of a finished match (Edit goals › Change full-time). The match length shows next to FULL TIME.',
+  ], sr: [
+    'Ako sat predje 65 minuta, Full time pita kada se utakmica stvarno zavrsila: sad, pre par minuta ili tacno vreme.',
+    'Admini mogu da promene kraj zavrsene utakmice (Edit goals › Change full-time).',
+  ] },
   { date: '2026-10-13', title: 'Auto-balance includes the waiting list', en: [
     'Everyone who is IN is now split into teams, the waiting list too. Extra players go on the bench and rotate in.',
   ], sr: [
