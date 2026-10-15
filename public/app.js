@@ -414,6 +414,7 @@ function predHtml(m) {
         <div class="pside"><div class="pt B">${B}</div><div class="pstep"><button class="btn sm" data-step="b:-1">−</button><span class="pn" id="pb">${b}</span><button class="btn sm" data-step="b:1">+</button></div></div>
       </div>
       <div class="btn-row" style="justify-content:center;margin-top:8px"><button class="btn primary" id="predsave">${P.mine ? 'Update guess' : 'Save guess'}</button>${P.mine ? '<button class="btn sm ghost" id="predclear">Remove</button>' : ''}</div>
+      ${P.mine?.flipped ? `<p class="y" style="font-size:17px;text-align:center;margin:8px 0 0">⇄ You were moved to the other team, so your guess was flipped to keep its meaning. Change it if you like.</p>` : ''}
       <p class="dim" style="font-size:17px;text-align:center;margin:8px 0 0">${P.mine ? `Your guess: <span class="y">${P.mine.a}-${P.mine.b}</span> · ` : ''}Hidden until kick-off. Exact score +3, right result +1 in the Predictor league.</p></div></div>`;
   }
   if (!P.list.length) return '';
@@ -735,6 +736,11 @@ function newsShare(n) {
 // ---------- what's new in the app (P190) ----------
 // Newest first. `en` is shown on the page, `sr` goes into the WhatsApp message (Serbian latin, no diacritics).
 const UPDATES = [
+  { date: '2026-10-15', title: 'Moved team? Your prediction follows you', en: [
+    'If an admin moves you to the other team after you predicted the score, your guess is flipped so it still means the same for your team. You see a note and can change it until kick-off.',
+  ], sr: [
+    'Ako te admin prebaci u drugi tim posle tvoje prognoze, prognoza se okrene da i dalje vazi za tvoj tim. Vidis poruku i mozes da je promenis do pocetka.',
+  ] },
   { date: '2026-10-15', title: 'Forgot to press Full time?', en: [
     'If the clock has run past 65 minutes, Full time asks when the game really ended: just now, minutes ago, or an exact time.',
     'Admins can change the full-time of a finished match (Edit goals › Change full-time). The match length shows next to FULL TIME.',

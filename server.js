@@ -134,6 +134,7 @@ addCol('sessions', 'elevated', 'INTEGER NOT NULL DEFAULT 0');
 addCol('attendance', 'invited_by', 'INTEGER');
 // this week only: 'gk' = plays in goal, 'out' = plays outfield; NULL = follow the player's position
 addCol('attendance', 'role', 'TEXT');
+addCol('predictions', 'flipped', 'INTEGER NOT NULL DEFAULT 0'); // 1 = swapped because the player moved team
 
 // ---------- helpers ----------
 const normPhone = (p) => {
@@ -337,7 +338,7 @@ const predScore = (p, m) => {
 const predInfo = (m, user) => {
   if (m.status === 'cancelled') return null;
   const locked = predLocked(m);
-  const all = db.prepare('SELECT player_id, a, b FROM predictions WHERE match_id=? ORDER BY created_at').all(m.id);
+  const all = db.prepare('SELECT player_id, a, b, flipped FROM predictions WHERE match_id=? ORDER BY created_at').all(m.id).map((p) => ({ ...p, flipped: !!p.flipped }));
   const mine = all.find((p) => p.player_id === user.id) || null;
   return { locked, count: all.length, mine, list: locked ? all.map((p) => ({ ...p, score: predScore(p, m) })) : [] };
 };
@@ -623,11 +624,19 @@ route('PUT', '/api/matches/:id/lineup', (req, res, { user, body, params }) => {
     if (slots.has(e.team + slot)) bad('Two players in one slot');
     seen.add(e.player_id); slots.add(e.team + slot);
   }
+  // players who saw their team and then got moved: flip their guess so "my team wins 4-2" still means that
+  const before = m.lineup_published && !predLocked(m)
+    ? Object.fromEntries(db.prepare('SELECT player_id, team FROM lineups WHERE match_id=?').all(m.id).map((l) => [l.player_id, l.team])) : {};
   db.exec('BEGIN');
   try {
     db.prepare('DELETE FROM lineups WHERE match_id=?').run(m.id);
     const ins = db.prepare('INSERT INTO lineups(match_id,player_id,team,slot) VALUES(?,?,?,?)');
-    for (const e of entries) ins.run(m.id, Number(e.player_id), e.team, Number(e.slot));
+    const flip = db.prepare('UPDATE predictions SET a=b, b=a, flipped=1-flipped WHERE match_id=? AND player_id=?');
+    for (const e of entries) {
+      ins.run(m.id, Number(e.player_id), e.team, Number(e.slot));
+      const was = before[Number(e.player_id)];
+      if (body.publish && was && was !== e.team) flip.run(m.id, Number(e.player_id));
+    }
     db.prepare('UPDATE matches SET formation_a=?, formation_b=?, lineup_published=? WHERE id=?')
       .run(String(body.formation_a || ''), String(body.formation_b || ''), body.publish ? 1 : 0, m.id);
     db.exec('COMMIT');
@@ -795,7 +804,7 @@ route('POST', '/api/matches/:id/prediction', (req, res, { user, body, params }) 
   else {
     const a = int(body.a, 'Score', 0, 30), b = int(body.b, 'Score', 0, 30);
     db.prepare(`INSERT INTO predictions(match_id, player_id, a, b) VALUES(?,?,?,?)
-      ON CONFLICT(match_id, player_id) DO UPDATE SET a=excluded.a, b=excluded.b, created_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')`).run(m.id, user.id, a, b);
+      ON CONFLICT(match_id, player_id) DO UPDATE SET a=excluded.a, b=excluded.b, flipped=0, created_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')`).run(m.id, user.id, a, b);
   }
   send(res, 200, { match: matchDetail(m.id, user) });
 });
