@@ -88,7 +88,7 @@ function shell(active) {
   const me = S.me;
   return `
   <header class="topbar">
-    <div class="pageline"><span class="w">P${location.hash.startsWith('#/news') ? 101 : location.hash.startsWith('#/updates') ? 190 : location.hash.startsWith('#/rate') ? 312 : location.hash.startsWith('#/live') ? 310 : location.hash.startsWith('#/player') ? 306 : (TABS.find((t) => t.id === active) || TABS[0]).page}</span><span class="c">FUDBAL</span><span class="y clock">${clockText()}</span></div>
+    <div class="pageline"><span class="w">P${location.hash.startsWith('#/news') ? 101 : location.hash.startsWith('#/updates') ? 190 : location.hash.startsWith('#/email') ? 180 : location.hash.startsWith('#/rate') ? 312 : location.hash.startsWith('#/live') ? 310 : location.hash.startsWith('#/player') ? 306 : (TABS.find((t) => t.id === active) || TABS[0]).page}</span><span class="c">FUDBAL</span><span class="y clock">${clockText()}</span></div>
     <div class="titleband"><span class="dh">FUDBAL TEXT</span><span class="who"><span class="c hide-sm">${esc(me.name.toUpperCase())}</span>${me.is_spectator ? ' <span class="c">👀</span>' : ''}${me.is_admin ? ' <span class="m">ADMIN</span>' : me.admin_account ? ' <button class="linkbtn m" id="adminpin">[ADMIN]</button>' : ''} <a class="linkbtn newslink" id="newslink" href="#/news">[NEWS${S.newsUnread ? ` <span class="nb">${S.newsUnread}</span>` : ''}]</a> <button class="linkbtn" id="logout">[EXIT]</button></span></div>
   </header>
   <main id="view"></main>
@@ -125,6 +125,7 @@ async function route() {
     else if (page === 'player' && arg) await viewProfile(Number(arg));
     else if (page === 'news') await viewNews();
     else if (page === 'updates') viewUpdates();
+    else if (page === 'email') viewEmail();
     else if (page === 'rate' && arg) await viewRate(Number(arg));
     else if (page === 'fixtures') await viewFixtures();
     else if (page === 'stats') await viewStats();
@@ -332,6 +333,8 @@ function todoHtml(items) {
   if (!items || !items.length) return '';
   const left = (iso) => { const h = (Date.parse(iso) - Date.now()) / 3.6e6; return h < 1 ? 'closes soon' : h < 24 ? `${Math.round(h)}h left` : `until ${fmtShort(iso)} ${fmtTime(iso)}`; };
   const row = (t) => {
+    if (t.type === 'email') return `<a class="todo-item c" href="#/email"><span class="ti">📧</span><span class="tt"><b>ADD YOUR EMAIL</b>
+      <span class="dim">for the match videos on YouTube · takes 10 seconds</span></span><span class="go">›</span></a>`;
     if (t.type === 'motm') return `<a class="todo-item m" href="#/match/${t.match_id}/motm"><span class="ti">★</span><span class="tt"><b>VOTE MAN OF THE MATCH</b>
       <span class="dim">${esc(t.label)} · ${left(t.closes_at)}</span></span><span class="go">›</span></a>`;
     if (t.type === 'rate') return `<a class="todo-item y" href="#/rate/${t.match_id}"><span class="ti">⭐</span><span class="tt"><b>RATE THE PLAYERS${t.done ? ` (${t.done}/${t.total})` : ''}</b>
@@ -736,6 +739,13 @@ function newsShare(n) {
 // ---------- what's new in the app (P190) ----------
 // Newest first. `en` is shown on the page, `sr` goes into the WhatsApp message (Serbian latin, no diacritics).
 const UPDATES = [
+  { date: '2026-10-15', title: 'Add your email for the match videos', en: [
+    'Match videos go on YouTube and are shared privately. Add the email of your Google account (P180, or tap 📧 in your to-do).',
+    'Only you and the admins can see it. Admins have an Emails list with a copy button.',
+  ], sr: [
+    'Snimci utakmica idu na YouTube i dele se privatno. Upisite email od Google naloga (Gmail) — stoji u vasem to-do na pocetnoj.',
+    'Email vide samo vi i admini.',
+  ] },
   { date: '2026-10-15', title: 'Moved team? Your prediction follows you', en: [
     'If an admin moves you to the other team after you predicted the score, your guess is flipped so it still means the same for your team. You see a note and can change it until kick-off.',
   ], sr: [
@@ -819,6 +829,46 @@ function viewUpdates() {
     const text = `📺 *FUDBAL TEXT P190*\n🆕 *STA JE NOVO* (${updDate(u.date)})\n\n${u.sr.map((x) => `• ${x}`).join('\n')}\n\n${location.origin}/#/updates`;
     window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
   }));
+}
+
+// ---------- your email (P180): for sharing the match videos on YouTube ----------
+function viewEmail() {
+  const v = mount('news');
+  const draw = () => {
+    const e = S.me.email || '';
+    v.innerHTML = `<div class="panel"><div class="panel-h" style="background:var(--cy);color:#000">📧 Your email<span class="spacer"></span><a class="btn sm" href="#/match">‹ Back</a></div>
+      <div class="panel-b">
+        <p>We put the match videos on YouTube and share them privately. Add the email of your <span class="y">Google account (Gmail)</span> so you can watch them.</p>
+        <form id="emf" class="btn-row"><input type="email" name="email" value="${esc(e)}" placeholder="name@gmail.com" autocomplete="email" maxlength="200" style="max-width:340px" required>
+          <button class="btn primary">${e ? 'Update' : 'Save'}</button></form>
+        <p class="dim" style="font-size:17px">${e ? `Saved: <span class="g">${esc(e)}</span> · ` : ''}Only you and the admins can see it.</p>
+      </div></div>`;
+    $('#emf', v).onsubmit = async (ev) => {
+      ev.preventDefault();
+      try {
+        const r = await api('POST', '/api/me/email', { email: ev.target.email.value });
+        S.me.email = r.email; toast('Email saved, thanks!'); draw();
+      } catch (err) { fail(err); }
+    };
+  };
+  draw();
+}
+
+async function adminEmails(el) {
+  await loadPlayers();
+  const members = S.players.filter((p) => p.active && !p.is_guest);
+  const have = members.filter((p) => p.email), missing = members.filter((p) => !p.email);
+  el.innerHTML = `<div class="panel"><div class="panel-h">Emails<span class="spacer"></span><span class="sub">${have.length}/${members.length} added</span></div>
+    <div class="panel-b">
+      <div class="btn-row"><button class="btn primary" id="emcopy" ${have.length ? '' : 'disabled'}>Copy all ${have.length} emails</button>
+        ${missing.length ? '<button class="btn" id="emnudge">Ask the missing on WhatsApp</button>' : ''}</div>
+      <p class="dim" style="font-size:17px">Copied as a comma-separated list, ready to paste into YouTube's "Share privately".</p>
+      <div class="table-wrap"><table class="fm"><tbody>${[...have, ...missing].map((p) => `<tr><td class="name">${esc(p.name)}${p.is_spectator ? ' <span class="dim">SPECTATOR</span>' : ''}</td>
+        <td>${p.email ? `<span class="g">${esc(p.email)}</span>` : '<span class="r">— missing</span>'}</td></tr>`).join('')}</tbody></table></div>
+    </div></div>`;
+  $('#emcopy', el).onclick = () => navigator.clipboard?.writeText(have.map((p) => p.email).join(', ')).then(() => toast(`Copied ${have.length} emails`), () => fail(new Error('Could not copy')));
+  const nudge = $('#emnudge', el);
+  if (nudge) nudge.onclick = () => waOpen(`📺 *FUDBAL TEXT P180*\n📧 *UPISITE SVOJ EMAIL*\nSnimke utakmica stavljamo na YouTube i delimo privatno. Upisite email od Google naloga (Gmail) da biste mogli da ih gledate:\n\n${missing.map((p) => `• ${p.name}`).join('\n')}\n\n${location.origin}/#/email`);
 }
 
 function newsForm(n, done) {
@@ -1481,13 +1531,14 @@ async function viewStats() {
 // ---------- admin ----------
 async function viewAdmin(sub, arg) {
   const v = mount('admin');
-  const subs = [['squad', 'Squad'], ['matches', 'Matches'], ['activity', 'Activity'], ['settings', 'Settings']];
+  const subs = [['squad', 'Squad'], ['matches', 'Matches'], ['activity', 'Activity'], ['emails', 'Emails'], ['settings', 'Settings']];
   v.innerHTML = `<div class="subtabs">${subs.map(([k, l]) => `<a class="btn sm ${k === sub ? 'active' : ''}" href="#/admin/${k}">${l}</a>`).join('')}</div><div id="adm"></div>`;
   const el = $('#adm');
   if (sub === 'squad') return adminSquad(el);
   if (sub === 'matches') return adminMatches(el, arg);
   if (sub === 'settings') return adminSettings(el);
   if (sub === 'activity') return adminActivity(el);
+  if (sub === 'emails') return adminEmails(el);
 }
 
 const ago = (iso) => {

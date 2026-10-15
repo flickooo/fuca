@@ -135,6 +135,7 @@ addCol('attendance', 'invited_by', 'INTEGER');
 // this week only: 'gk' = plays in goal, 'out' = plays outfield; NULL = follow the player's position
 addCol('attendance', 'role', 'TEXT');
 addCol('predictions', 'flipped', 'INTEGER NOT NULL DEFAULT 0'); // 1 = swapped because the player moved team
+addCol('players', 'email', 'TEXT'); // for sharing the match videos (YouTube); seen only by the player and admins
 
 // ---------- helpers ----------
 const normPhone = (p) => {
@@ -292,7 +293,7 @@ const limited = (ip) => {
 // ---------- domain ----------
 const pubPlayer = (p, admin) => ({
   id: p.id, name: p.name, position: p.position, rating: p.rating, is_admin: !!p.is_admin, active: !!p.active, is_guest: !!p.is_guest, is_spectator: !!p.is_spectator,
-  ...(admin && !p.is_guest ? { phone: p.phone } : {}),
+  ...(admin && !p.is_guest ? { phone: p.phone, email: p.email || null } : {}),
   ...(admin ? { has_pin: !!p.pin_hash } : {}),
 });
 const meJson = (u) => ({ ...pubPlayer(u, true), admin_account: !!u.admin_account });
@@ -439,6 +440,14 @@ route('POST', '/api/logout', (req, res) => {
 });
 
 route('GET', '/api/me', (req, res, { user }) => send(res, 200, { user: meJson(user) }));
+
+// Each member adds their own email (Google account) so the match videos can be shared with them
+route('POST', '/api/me/email', (req, res, { user, body }) => {
+  const email = String(body.email || '').trim().toLowerCase();
+  if (email && (email.length > 200 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))) bad('That doesn\'t look like an email address');
+  db.prepare('UPDATE players SET email=? WHERE id=?').run(email || null, user.id);
+  send(res, 200, { email: email || null });
+});
 
 // ---------- routes: players ----------
 route('GET', '/api/players', (req, res, { user }) => {
@@ -856,6 +865,7 @@ route('GET', '/api/admin/ability-suggestions', (req, res, { user }) => {
 // Personal to-do list for the main page: things waiting for this player
 route('GET', '/api/todo', (req, res, { user }) => {
   const items = [];
+  if (!user.email) items.push({ type: 'email' });
   const since = new Date(Date.now() - (RATE_HOURS + 24) * 3600e3).toISOString();
   for (const m of db.prepare(`SELECT * FROM matches WHERE status='played' AND COALESCE(ended_at, starts_at) >= ? ORDER BY starts_at DESC`).all(since)) {
     const label = `${m.team_a_name} ${m.score_a ?? 0}-${m.score_b ?? 0} ${m.team_b_name}`;
