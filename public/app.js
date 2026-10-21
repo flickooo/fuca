@@ -225,8 +225,15 @@ async function viewMatch(id, focus) {
   await Promise.all([loadPlayers(), loadMatches(), isHome ? api('GET', '/api/todo').then((r) => (todo = r.items)).catch(() => {}) : null]);
   id = id || S.nextId;
   if (!id) {
-    v.innerHTML = `${todoHtml(todo)}<div class="panel"><div class="panel-h">Next Match</div><div class="empty-state"><div class="ico">NO MATCH</div>
-      <p>No match scheduled yet.</p>${S.me.is_admin ? '<a class="btn primary" href="#/admin/matches/new">Schedule a match</a>' : '<p>Ask an admin to create one.</p>'}</div></div>`;
+    // no match queued: the to-do, alerts (e.g. ratings still open from the last game) and news still show
+    const last = S.matches.find((x) => x.status === 'played');
+    const [lm] = await Promise.all([S.me.is_admin && last ? api('GET', `/api/matches/${last.id}`).then((r) => r.match).catch(() => null) : null, loadNews().catch(() => {})]);
+    const draw = () => {
+      v.innerHTML = `${todoHtml(todo)}${lm ? alertsHtml(lm) : ''}${newsStrip()}<div class="panel"><div class="panel-h">Next Match</div><div class="empty-state"><div class="ico">NO MATCH</div>
+        <p>No match scheduled yet.</p>${S.me.is_admin ? '<a class="btn primary" href="#/admin/matches/new">Schedule a match</a>' : '<p>Ask an admin to create one.</p>'}</div></div>`;
+      if (lm) bindAlerts(v, lm, draw);
+    };
+    draw();
     return;
   }
   const [{ match: m }] = await Promise.all([api('GET', `/api/matches/${id}`), loadNews().catch(() => {})]);
@@ -234,14 +241,12 @@ async function viewMatch(id, focus) {
     const mine = m.attendance.find((a) => a.player_id === S.me.id);
     const open = m.status === 'upcoming';
     const played = m.status === 'played' && m.score_a != null;
-    const recent = (S.news || []).filter((n) => n.pinned || Date.now() - new Date(n.created_at) < 14 * 864e5).slice(0, 3);
     const liveNow = m.status === 'upcoming' && m.clock_started;
     v.innerHTML = `
     ${isHome ? todoHtml(todo.filter((t) => !(t.type === 'predict' && t.match_id === m.id && m.predictions?.mine))) : ''}
     ${liveNow ? `<a class="livestrip" href="#/live/${m.id}"><span><span class="flash">●</span> LIVE</span> <b><span class="chip-team A"></span> ${m.score_a ?? 0}-${m.score_b ?? 0} <span class="chip-team B" style="outline:1px solid #fff"></span></b> <span>WATCH ›</span></a>` : ''}
     ${S.me.is_admin ? alertsHtml(m) : ''}
-    ${recent.length ? `<div class="panel newsstrip"><div class="panel-h"><span>News</span>${S.newsUnread ? `<span class="nb flash">${S.newsUnread} NEW</span>` : ''}<span class="spacer"></span><a class="btn sm" href="#/news">All news ›</a></div>
-      <div class="panel-b">${recent.map((n) => newsItem(n, false)).join('')}</div></div>` : ''}
+    ${newsStrip()}
     <div class="grid2">
       <div>
         <div class="panel"><div class="panel-h">${id === S.nextId ? 'Next Match' : 'Match'}<span class="spacer"></span>
@@ -326,6 +331,12 @@ async function viewMatch(id, focus) {
     if (focus) { const t = document.getElementById(focus); if (t) { t.scrollIntoView({ block: 'start' }); t.classList.add('focus'); } focus = null; }
   };
   render(m);
+}
+
+function newsStrip() {
+  const recent = (S.news || []).filter((n) => n.pinned || Date.now() - new Date(n.created_at) < 14 * 864e5).slice(0, 3);
+  return recent.length ? `<div class="panel newsstrip"><div class="panel-h"><span>News</span>${S.newsUnread ? `<span class="nb flash">${S.newsUnread} NEW</span>` : ''}<span class="spacer"></span><a class="btn sm" href="#/news">All news ›</a></div>
+      <div class="panel-b">${recent.map((n) => newsItem(n, false)).join('')}</div></div>` : '';
 }
 
 // ---------- personal to-do on the main page ----------
@@ -739,6 +750,11 @@ function newsShare(n) {
 // ---------- what's new in the app (P190) ----------
 // Newest first. `en` is shown on the page, `sr` goes into the WhatsApp message (Serbian latin, no diacritics).
 const UPDATES = [
+  { date: '2026-10-21', title: 'Main page works without a match', en: [
+    'When no match is scheduled yet, the main page still shows your to-do, the news and (for admins) the WhatsApp alerts.',
+  ], sr: [
+    'Kad jos nema zakazane utakmice, pocetna i dalje prikazuje vas to-do, vesti i (za admine) WhatsApp poruke.',
+  ] },
   { date: '2026-10-15', title: 'Add your email for the match videos', en: [
     'Match videos go on YouTube and are shared privately. Add the email of your Google account (P180, or tap 📧 in your to-do).',
     'Only you and the admins can see it. Admins have an Emails list with a copy button.',
