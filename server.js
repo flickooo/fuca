@@ -136,6 +136,7 @@ addCol('attendance', 'invited_by', 'INTEGER');
 addCol('attendance', 'role', 'TEXT');
 addCol('predictions', 'flipped', 'INTEGER NOT NULL DEFAULT 0'); // 1 = swapped because the player moved team
 addCol('players', 'email', 'TEXT'); // for sharing the match videos (YouTube); seen only by the player and admins
+addCol('matches', 'video_url', 'TEXT'); // YouTube link of the match video (admins set it after uploading)
 
 // ---------- helpers ----------
 const normPhone = (p) => {
@@ -802,6 +803,35 @@ route('POST', '/api/matches/:id/fulltime', (req, res, { user, body, params }) =>
   syncScore(m.id);
   db.prepare(`UPDATE matches SET status='played', ended_at=? WHERE id=?`).run(new Date(t).toISOString(), m.id);
   try { announceMilestones(); } catch (e) { console.error(e); }
+  send(res, 200, { match: matchDetail(m.id, user) });
+});
+
+// Match video: admin pastes the YouTube link; a news item tells everyone (one per match, updated if the link changes)
+const ytUrl = (s) => {
+  let u;
+  try { u = new URL(String(s).trim()); } catch { return null; }
+  const host = u.hostname.replace(/^www\.|^m\./, '');
+  if (u.protocol !== 'https:' && u.protocol !== 'http:') return null;
+  if (host === 'youtu.be' && u.pathname.length > 1) return u.href;
+  if (host === 'youtube.com' && (u.searchParams.get('v') || /^\/(live|shorts|embed)\/[\w-]+/.test(u.pathname))) return u.href;
+  return null;
+};
+route('POST', '/api/matches/:id/video', (req, res, { user, body, params }) => {
+  requireAdmin(user);
+  const m = db.prepare('SELECT * FROM matches WHERE id=?').get(Number(params.id));
+  if (!m) throw new HttpError(404, 'Match not found');
+  const raw = String(body.url || '').trim();
+  const url = raw ? ytUrl(raw) : null;
+  if (raw && !url) bad('That doesn\'t look like a YouTube link (youtube.com/watch?v=… or youtu.be/…)');
+  db.prepare('UPDATE matches SET video_url=? WHERE id=?').run(url, m.id);
+  const ukey = `video:${m.id}`;
+  if (!url) db.prepare('DELETE FROM news WHERE ukey=?').run(ukey);
+  else if (db.prepare('SELECT id FROM news WHERE ukey=?').get(ukey)) db.prepare('UPDATE news SET body=? WHERE ukey=?').run(url, ukey);
+  else {
+    const line = m.score_a != null ? scoreLine(m) : `${m.team_a_name} vs ${m.team_b_name}`;
+    db.prepare(`INSERT INTO news(kind, title, body, match_id, ukey, created_by) VALUES('video',?,?,?,?,?)`)
+      .run(`🎥 MATCH VIDEO: ${line}`, url, m.id, ukey, user.id);
+  }
   send(res, 200, { match: matchDetail(m.id, user) });
 });
 

@@ -273,6 +273,7 @@ async function viewMatch(id, focus) {
           </div>
         </div>
         ${m.goals.length || played ? `<div class="panel"><div class="panel-h">${played ? 'Result' : 'Goals'}<span class="spacer"></span>${played ? '<button class="btn sm" id="report">Share report</button>' : ''}</div><div class="panel-b">${m.goals.length ? scorersHtml(m) + goalTimeline(m) : '<span class="dim">No goals were recorded live.</span>'}${pointsHtml(m)}</div></div>` : ''}
+        ${videoPanel(m)}
         ${m.predictions ? predHtml(m) : ''}
         ${m.motm ? motmHtml(m) : ''}
         ${m.ratings ? ratingsPanel(m) : ''}
@@ -325,6 +326,10 @@ async function viewMatch(id, focus) {
     if (ag) ag.onclick = () => guestForm(m, async (fresh) => { await loadPlayers(); render(fresh); });
     const rp = $('#report', v);
     if (rp) rp.onclick = () => shareReport(m);
+    const vs = $('#vidshare', v);
+    if (vs) vs.onclick = () => shareVideo(m);
+    const ve = $('#videdit', v);
+    if (ve) ve.onclick = () => videoForm(m, (nm) => render(nm));
     const sh = $('#share', v);
     if (sh) sh.onclick = () => shareMatch(m);
     if (S.me.is_admin) bindAlerts(v, m, () => render(m));
@@ -729,6 +734,10 @@ function newsItem(n, full) {
     head = `<span class="c">${esc(label)}</span>`;
     bodyHtml = `<div class="nabl"><b class="y">${n.player_id ? `<a class="plink" href="#/player/${n.player_id}">${esc(rest.join(': '))}</a>` : esc(rest.join(': '))}</b></div>
       <div class="nbody">${n.match_id ? `<a class="plink dim" href="#/match/${n.match_id}">${esc(n.body)} ›</a>` : esc(n.body)}</div>`;
+  } else if (n.kind === 'video') {
+    head = `<span class="r">🎥 MATCH VIDEO</span>`;
+    bodyHtml = `<div class="nabl"><b class="y">${n.match_id ? `<a class="plink" href="#/match/${n.match_id}">${esc(n.title.split(': ').slice(1).join(': '))}</a>` : esc(n.title)}</b></div>
+      <div class="nbody"><a class="btn sm primary" href="${esc(n.body)}" target="_blank" rel="noopener">▶ Watch on YouTube</a></div>`;
   } else head = `<span class="y">${esc(n.title.toUpperCase())}</span>`;
   return `<div class="news-item ${n.pinned ? 'pinned' : ''} ${n.id > newsSeen() ? 'unread' : ''}">
     <div class="nhead">${n.pinned ? '<span class="m">📌</span> ' : ''}${head}<span class="spacer"></span><span class="dim nd">${fmtStamp(n.created_at)}</span></div>
@@ -741,6 +750,10 @@ function newsItem(n, full) {
   </div>`;
 }
 function newsShare(n) {
+  if (n.kind === 'video') {
+    const m = S.matches.find((x) => x.id === n.match_id) || { team_a_name: '', team_b_name: '', starts_at: n.created_at };
+    return window.open(`https://wa.me/?text=${encodeURIComponent(videoText(m, n.body))}`, '_blank');
+  }
   const who = n.player_id && S.pmap[n.player_id];
   const text = n.kind === 'milestone' ? `📺 *FUDBAL TEXT P101*\n*${n.title}*\n${n.body}` : n.kind === 'motm' ? `📺 *FUDBAL TEXT P101*\n⭐ *${n.title}*\n${n.body}` : n.kind === 'ability'
     ? `📺 *FUDBAL TEXT P101*\n${n.new_val > n.old_val ? '▲ ABILITY UP' : '▼ ABILITY DOWN'}: *${who?.name || ''}* ${n.old_val} → ${n.new_val}${n.body ? `\n${n.body}` : ''}`
@@ -750,6 +763,13 @@ function newsShare(n) {
 // ---------- what's new in the app (P190) ----------
 // Newest first. `en` is shown on the page, `sr` goes into the WhatsApp message (Serbian latin, no diacritics).
 const UPDATES = [
+  { date: '2026-10-22', title: 'Match videos on the page', en: [
+    'When an admin adds the YouTube link of a match video, it shows up in the news (marked NEW) and as a big WATCH ON YOUTUBE button on the match page.',
+    'Admins: on a finished match, tap + Add YouTube link; after saving you can send it straight to WhatsApp.',
+  ], sr: [
+    'Kad admin doda YouTube link snimka, pojavi se u vestima (NEW) i kao veliko dugme WATCH ON YOUTUBE na stranici utakmice.',
+    'Snimci su privatni: upisite email od Google naloga u aplikaciji (P180) da biste mogli da ih gledate.',
+  ] },
   { date: '2026-10-21', title: 'Main page works without a match', en: [
     'When no match is scheduled yet, the main page still shows your to-do, the news and (for admins) the WhatsApp alerts.',
   ], sr: [
@@ -960,6 +980,46 @@ async function guestForm(m, done) {
 }
 
 // ---------- WhatsApp match report ----------
+// ---------- match video (YouTube) ----------
+function videoPanel(m) {
+  if (!m.video_url && !(S.me.is_admin && m.status === 'played')) return '';
+  if (!m.video_url) return `<div class="panel"><div class="panel-h">🎥 Match video</div><div class="panel-b">
+    <p class="muted">Uploaded the video to YouTube? Add the link: everyone gets it in the news, and you can send it on WhatsApp.</p>
+    <button class="btn primary" id="videdit">+ Add YouTube link</button></div></div>`;
+  return `<div class="panel"><div class="panel-h" style="background:var(--re);color:#fff">🎥 Match video<span class="spacer"></span>
+      ${S.me.is_admin ? '<button class="btn sm" id="vidshare">WhatsApp</button> <button class="btn sm" id="videdit">Change</button>' : ''}</div>
+    <div class="panel-b"><a class="btn primary vidbtn" href="${esc(m.video_url)}" target="_blank" rel="noopener">▶ WATCH ON YOUTUBE</a>
+    <p class="dim" style="font-size:17px;margin:8px 0 0">Can't open it? The video is private: add the email of your Google account on <a class="c" href="#/email">P180</a>${S.me.email ? '' : ' <span class="y">(you haven\'t yet)</span>'}.</p></div></div>`;
+}
+function videoText(m, url) {
+  const line = m.score_a != null ? `${m.team_a_name} ${m.score_a}-${m.score_b} ${m.team_b_name}` : `${m.team_a_name} vs ${m.team_b_name}`;
+  return `📺 *FUDBAL TEXT*\n🎥 *SNIMAK UTAKMICE* (${fmtShort(m.starts_at)})\n${line}\n\n▶ ${url}\n\nNe mozete da otvorite? Upisite email od Google naloga u aplikaciji: ${location.origin}/#/email`;
+}
+const shareVideo = (m) => window.open(`https://wa.me/?text=${encodeURIComponent(videoText(m, m.video_url))}`, '_blank');
+function videoForm(m, done) {
+  modal(m.video_url ? 'Change the video link' : 'Add the match video', `
+    <form id="vf">
+      <label class="f"><span>YouTube link</span><input type="url" name="url" value="${esc(m.video_url || '')}" placeholder="https://youtu.be/…" required></label>
+      <p class="dim" style="font-size:17px">Everyone sees it in the news and on this match page.${m.video_url ? '' : ' Then you can send it on WhatsApp.'}</p>
+      <div class="btn-row">${m.video_url ? '<button type="button" class="btn danger" id="vrm">Remove</button>' : ''}<span class="spacer"></span><button class="btn primary">Save</button></div>
+    </form>`, (root, close) => {
+    $('#vf', root).onsubmit = async (e) => {
+      e.preventDefault();
+      try {
+        const first = !m.video_url;
+        const r = await api('POST', `/api/matches/${m.id}/video`, { url: e.target.url.value });
+        close(); toast('Video link saved'); done(r.match);
+        if (first && confirm('Send the video link on WhatsApp now?')) shareVideo(r.match);
+      } catch (err) { fail(err); }
+    };
+    const rm = $('#vrm', root);
+    if (rm) rm.onclick = async () => {
+      if (!confirm('Remove the video link (and its news item)?')) return;
+      try { const r = await api('POST', `/api/matches/${m.id}/video`, { url: '' }); close(); toast('Video link removed'); done(r.match); } catch (err) { fail(err); }
+    };
+  });
+}
+
 function shareReport(m) {
   const d = dt(m.starts_at);
   const scorers = (team) => {
