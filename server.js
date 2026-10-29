@@ -137,6 +137,8 @@ addCol('attendance', 'role', 'TEXT');
 addCol('predictions', 'flipped', 'INTEGER NOT NULL DEFAULT 0'); // 1 = swapped because the player moved team
 addCol('players', 'email', 'TEXT'); // for sharing the match videos (YouTube); seen only by the player and admins
 addCol('matches', 'video_url', 'TEXT'); // YouTube link of the match video (admins set it after uploading)
+addCol('matches', 'photo', 'TEXT');       // team photo file name in DATA_DIR/photos
+addCol('matches', 'photo_by', 'INTEGER');
 
 // ---------- helpers ----------
 const normPhone = (p) => {
@@ -242,9 +244,9 @@ const send = (res, status, body, headers = {}) => {
 class HttpError extends Error { constructor(status, msg) { super(msg); this.status = status; } }
 const bad = (msg) => { throw new HttpError(400, msg); };
 
-const readBody = (req) => new Promise((resolve, reject) => {
+const readBody = (req, max = 1e6) => new Promise((resolve, reject) => {
   let size = 0; const chunks = [];
-  req.on('data', (c) => { size += c.length; if (size > 1e6) { reject(new HttpError(413, 'Too large')); req.destroy(); } else chunks.push(c); });
+  req.on('data', (c) => { size += c.length; if (size > max) { reject(new HttpError(413, 'Too large')); req.destroy(); } else chunks.push(c); });
   req.on('end', () => {
     if (!chunks.length) return resolve({});
     try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); } catch { reject(new HttpError(400, 'Bad JSON')); }
@@ -835,6 +837,46 @@ route('POST', '/api/matches/:id/video', (req, res, { user, body, params }) => {
   send(res, 200, { match: matchDetail(m.id, user) });
 });
 
+// Team photo: one per match. Any member can add it when there is none; the one who added it or an admin can change/remove it.
+// The browser shrinks it to <= 1920 px JPEG before upload (~300-600 KB), stored in DATA_DIR/photos.
+const PHOTO_DIR = path.join(DATA_DIR, 'photos');
+fs.mkdirSync(PHOTO_DIR, { recursive: true });
+route('POST', '/api/matches/:id/photo', (req, res, { user, body, params }) => {
+  const m = db.prepare('SELECT * FROM matches WHERE id=?').get(Number(params.id));
+  if (!m) throw new HttpError(404, 'Match not found');
+  if (m.photo && !user.is_admin && m.photo_by !== user.id) throw new HttpError(403, 'Only an admin or the person who added it can change the photo');
+  const old = m.photo;
+  if (body.remove) {
+    db.prepare('UPDATE matches SET photo=NULL, photo_by=NULL WHERE id=?').run(m.id);
+    db.prepare('DELETE FROM news WHERE ukey=?').run(`photo:${m.id}`);
+  } else {
+    const mt = /^data:image\/jpeg;base64,([A-Za-z0-9+/=]+)$/.exec(String(body.data || ''));
+    if (!mt) bad('Send the photo as a JPEG');
+    const buf = Buffer.from(mt[1], 'base64');
+    if (buf.length < 1000 || buf[0] !== 0xff || buf[1] !== 0xd8) bad('That is not a JPEG photo');
+    const name = `${m.id}-${crypto.randomBytes(8).toString('hex')}.jpg`;
+    fs.writeFileSync(path.join(PHOTO_DIR, name), buf);
+    db.prepare('UPDATE matches SET photo=?, photo_by=? WHERE id=?').run(name, old ? m.photo_by : user.id, m.id);
+    const ukey = `photo:${m.id}`;
+    if (db.prepare('SELECT id FROM news WHERE ukey=?').get(ukey)) db.prepare('UPDATE news SET body=? WHERE ukey=?').run(name, ukey);
+    else {
+      const line = m.score_a != null ? scoreLine(m) : `${m.team_a_name} vs ${m.team_b_name}`;
+      db.prepare(`INSERT INTO news(kind, title, body, match_id, ukey, created_by) VALUES('photo',?,?,?,?,?)`)
+        .run(`📸 TEAM PHOTO: ${line}`, name, m.id, ukey, user.id);
+    }
+  }
+  if (old) fs.rm(path.join(PHOTO_DIR, old), () => {});
+  send(res, 200, { match: matchDetail(m.id, user) });
+}, { maxBody: 4e6 });
+route('GET', '/api/photos/:file', (req, res, { params }) => {
+  if (!/^\d+-[0-9a-f]{16}\.jpg$/.test(params.file)) throw new HttpError(404, 'Not found');
+  fs.readFile(path.join(PHOTO_DIR, params.file), (err, buf) => {
+    if (err) { res.writeHead(404); return res.end('Not found'); }
+    res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Content-Length': buf.length, 'Cache-Control': 'private, max-age=31536000, immutable' });
+    res.end(buf);
+  });
+});
+
 route('POST', '/api/matches/:id/prediction', (req, res, { user, body, params }) => {
   const m = db.prepare('SELECT * FROM matches WHERE id=?').get(Number(params.id));
   if (!m) throw new HttpError(404, 'Match not found');
@@ -1409,7 +1451,7 @@ const server = http.createServer(async (req, res) => {
       const params = Object.fromEntries(r.keys.map((k, i) => [k, decodeURIComponent(mt[i + 1])]));
       const user = currentUser(req);
       if (!r.public && !user) throw new HttpError(401, 'Please log in');
-      const body = ['POST', 'PUT'].includes(req.method) ? await readBody(req) : {};
+      const body = ['POST', 'PUT'].includes(req.method) ? await readBody(req, r.maxBody) : {};
       return await r.handler(req, res, { user, body, params, query: url.searchParams });
     }
     throw new HttpError(404, 'Not found');

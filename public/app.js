@@ -273,6 +273,7 @@ async function viewMatch(id, focus) {
           </div>
         </div>
         ${m.goals.length || played ? `<div class="panel"><div class="panel-h">${played ? 'Result' : 'Goals'}<span class="spacer"></span>${played ? '<button class="btn sm" id="report">Share report</button>' : ''}</div><div class="panel-b">${m.goals.length ? scorersHtml(m) + goalTimeline(m) : '<span class="dim">No goals were recorded live.</span>'}${pointsHtml(m)}</div></div>` : ''}
+        ${photoPanel(m)}
         ${videoPanel(m)}
         ${m.predictions ? predHtml(m) : ''}
         ${m.motm ? motmHtml(m) : ''}
@@ -326,6 +327,7 @@ async function viewMatch(id, focus) {
     if (ag) ag.onclick = () => guestForm(m, async (fresh) => { await loadPlayers(); render(fresh); });
     const rp = $('#report', v);
     if (rp) rp.onclick = () => shareReport(m);
+    bindPhoto(v, m, (nm) => render(nm));
     const vs = $('#vidshare', v);
     if (vs) vs.onclick = () => shareVideo(m);
     const ve = $('#videdit', v);
@@ -734,6 +736,10 @@ function newsItem(n, full) {
     head = `<span class="c">${esc(label)}</span>`;
     bodyHtml = `<div class="nabl"><b class="y">${n.player_id ? `<a class="plink" href="#/player/${n.player_id}">${esc(rest.join(': '))}</a>` : esc(rest.join(': '))}</b></div>
       <div class="nbody">${n.match_id ? `<a class="plink dim" href="#/match/${n.match_id}">${esc(n.body)} ›</a>` : esc(n.body)}</div>`;
+  } else if (n.kind === 'photo') {
+    head = `<span class="c">📸 TEAM PHOTO</span>`;
+    bodyHtml = `<div class="nabl"><b class="y">${n.match_id ? `<a class="plink" href="#/match/${n.match_id}">${esc(n.title.split(': ').slice(1).join(': '))}</a>` : esc(n.title)}</b></div>
+      <a href="${n.match_id ? `#/match/${n.match_id}` : photoUrl(n.body)}"><img class="newsphoto" src="${photoUrl(n.body)}" alt="Team photo" loading="lazy"></a>`;
   } else if (n.kind === 'video') {
     head = `<span class="r">🎥 MATCH VIDEO</span>`;
     bodyHtml = `<div class="nabl"><b class="y">${n.match_id ? `<a class="plink" href="#/match/${n.match_id}">${esc(n.title.split(': ').slice(1).join(': '))}</a>` : esc(n.title)}</b></div>
@@ -750,6 +756,10 @@ function newsItem(n, full) {
   </div>`;
 }
 function newsShare(n) {
+  if (n.kind === 'photo') {
+    const m = S.matches.find((x) => x.id === n.match_id);
+    if (m) return sharePhoto({ ...m, photo: n.body });
+  }
   if (n.kind === 'video') {
     const m = S.matches.find((x) => x.id === n.match_id) || { team_a_name: '', team_b_name: '', starts_at: n.created_at };
     return window.open(`https://wa.me/?text=${encodeURIComponent(videoText(m, n.body))}`, '_blank');
@@ -763,6 +773,13 @@ function newsShare(n) {
 // ---------- what's new in the app (P190) ----------
 // Newest first. `en` is shown on the page, `sr` goes into the WhatsApp message (Serbian latin, no diacritics).
 const UPDATES = [
+  { date: '2026-10-29', title: 'Team photo for every match', en: [
+    'Took a picture after the game? Open the match and tap + Add photo. It shows on the match page and in the news.',
+    'Share sends the picture itself to WhatsApp from your phone.',
+  ], sr: [
+    'Slikali ste se posle utakmice? Otvorite utakmicu i dodajte sliku (+ Add photo). Vidi se na stranici utakmice i u vestima.',
+    'Share salje sliku direktno na WhatsApp sa telefona.',
+  ] },
   { date: '2026-10-22', title: 'Match videos on the page', en: [
     'When an admin adds the YouTube link of a match video, it shows up in the news (marked NEW) and as a big WATCH ON YOUTUBE button on the match page.',
     'Admins: on a finished match, tap + Add YouTube link; after saving you can send it straight to WhatsApp.',
@@ -980,6 +997,61 @@ async function guestForm(m, done) {
 }
 
 // ---------- WhatsApp match report ----------
+// ---------- team photo ----------
+const photoUrl = (f) => `/api/photos/${f}`;
+function photoPanel(m) {
+  const canEdit = S.me.is_admin || m.photo_by === S.me.id;
+  if (!m.photo) return m.status === 'played' || m.status === 'upcoming' && m.clock_started ? `<div class="panel"><div class="panel-h">📸 Team photo</div><div class="panel-b">
+    <p class="muted">Took a picture after the game? Add it here: everyone sees it in the news.</p>
+    <label class="btn primary">+ Add photo<input type="file" accept="image/*" id="photoin" hidden></label></div></div>` : '';
+  return `<div class="panel"><div class="panel-h">📸 Team photo<span class="spacer"></span>
+      <button class="btn sm" id="photoshare">Share</button>
+      ${canEdit ? `<label class="btn sm">Change<input type="file" accept="image/*" id="photoin" hidden></label> <button class="btn sm danger" id="photorm">✕</button>` : ''}</div>
+    <div class="panel-b"><a href="${photoUrl(m.photo)}" target="_blank" rel="noopener"><img class="teamphoto" src="${photoUrl(m.photo)}" alt="Team photo"></a></div></div>`;
+}
+// shrink to <= 1920 px on the long side and re-encode as JPEG (iPhone photos are 3-5 MB, HEIC)
+async function shrinkPhoto(file) {
+  const img = await new Promise((ok, no) => { const i = new Image(); i.onload = () => ok(i); i.onerror = () => no(new Error('Could not read that picture')); i.src = URL.createObjectURL(file); });
+  const k = Math.min(1, 1920 / Math.max(img.naturalWidth, img.naturalHeight));
+  const c = document.createElement('canvas');
+  c.width = Math.round(img.naturalWidth * k); c.height = Math.round(img.naturalHeight * k);
+  c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+  URL.revokeObjectURL(img.src);
+  return c.toDataURL('image/jpeg', 0.85);
+}
+function bindPhoto(root, m, done) {
+  const inp = $('#photoin', root);
+  if (inp) inp.onchange = async () => {
+    const f = inp.files && inp.files[0];
+    if (!f) return;
+    try {
+      toast('Uploading photo…');
+      const r = await api('POST', `/api/matches/${m.id}/photo`, { data: await shrinkPhoto(f) });
+      toast('Photo added'); done(r.match);
+    } catch (err) { fail(err); }
+  };
+  const rm = $('#photorm', root);
+  if (rm) rm.onclick = async () => {
+    if (!confirm('Remove the team photo?')) return;
+    try { const r = await api('POST', `/api/matches/${m.id}/photo`, { remove: true }); toast('Photo removed'); done(r.match); } catch (err) { fail(err); }
+  };
+  const sh = $('#photoshare', root);
+  if (sh) sh.onclick = () => sharePhoto(m);
+}
+function photoText(m) {
+  const line = m.score_a != null ? `${m.team_a_name} ${m.score_a}-${m.score_b} ${m.team_b_name}` : `${m.team_a_name} vs ${m.team_b_name}`;
+  return `📺 *FUDBAL TEXT*\n📸 *SLIKA EKIPE* (${fmtShort(m.starts_at)})\n${line}\n\n${location.origin}/#/match/${m.id}`;
+}
+// on phones: share the picture itself (WhatsApp shows it as a photo); elsewhere: a WhatsApp message with the link
+async function sharePhoto(m) {
+  try {
+    const blob = await (await fetch(photoUrl(m.photo))).blob();
+    const file = new File([blob], `fudbal-${m.starts_at.slice(0, 10)}.jpg`, { type: 'image/jpeg' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) return await navigator.share({ files: [file], text: photoText(m).replace(/\*/g, '') });
+  } catch (e) { if (e && e.name === 'AbortError') return; }
+  window.open(`https://wa.me/?text=${encodeURIComponent(photoText(m))}`, '_blank');
+}
+
 // ---------- match video (YouTube) ----------
 function videoPanel(m) {
   if (!m.video_url && !(S.me.is_admin && m.status === 'played')) return '';
