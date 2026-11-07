@@ -396,6 +396,8 @@ async function viewRate(id) {
   const mine = { ...R.mine };
   const { g, a } = goalTally(m);
   const team = (t) => m.lineup.filter((l) => l.team === t && l.player_id !== S.me.id && S.pmap[l.player_id]).sort((x, y) => x.slot - y.slot);
+  const inLineup = new Set(m.lineup.map((l) => l.player_id));
+  const extra = (m.played_ids || []).filter((pid) => !inLineup.has(pid) && pid !== S.me.id && S.pmap[pid]).map((pid) => ({ player_id: pid, slot: 999 }));
   const row = (l) => { const p = S.pmap[l.player_id], cur = mine[l.player_id];
     return `<div class="rate-row" data-pid="${l.player_id}"><div class="rn"><span class="nm">${esc(p.name.toUpperCase())}</span>
       <span class="ra" title="Ability">${stars(p.rating)}</span><span class="rx">${l.slot === 0 ? '🧤' : ''}${'⚽'.repeat(g[l.player_id] || 0)}${a[l.player_id] ? ` <span class="c">${'A'.repeat(a[l.player_id])}</span>` : ''}</span><span class="rs ${cur ? ratingCls(cur) : 'dim'}">${cur ?? '–'}</span></div>
@@ -406,6 +408,7 @@ async function viewRate(id) {
       <div class="panel-b"><div class="y" style="text-align:center;font-size:24px">${esc(m.team_a_name.toUpperCase())} ${m.score_a}-${m.score_b} ${esc(m.team_b_name.toUpperCase())}</div>
       <p class="dim" style="font-size:17px;margin:4px 0 0;text-align:center">1 = awful · 5 = ok · 10 = legend. Anonymous — only averages are shown, after ${fmtShort(R.closes_at)} ${fmtTime(R.closes_at)}. Saved as you tap; tap again to clear.</p></div>
       ${['A', 'B'].map((t) => `<div class="rteam ${t}">${esc((t === 'A' ? m.team_a_name : m.team_b_name).toUpperCase())}</div>${team(t).map(row).join('')}`).join('')}
+      ${extra.length ? `<div class="rteam">ALSO PLAYED</div>${extra.map(row).join('')}` : ''}
       <div class="btn-row" style="justify-content:space-between;margin-top:12px"><a class="btn ghost" href="#/match/${m.id}">‹ Match</a>
         <a class="btn ${done >= R.to_rate ? 'primary' : ''}" href="#/match/${m.id}">${done >= R.to_rate ? '✓ Done' : `Done (${done}/${R.to_rate})`}</a></div></div>`;
     $$('.rate-row', v).forEach((r) => $$('[data-s]', r).forEach((b) => (b.onclick = async () => {
@@ -511,7 +514,7 @@ function scorersHtml(m) {
 }
 function motmHtml(m) {
   const mo = m.motm;
-  const played = [...new Set(m.lineup.map((l) => l.player_id))];
+  const played = m.played_ids || [...new Set(m.lineup.map((l) => l.player_id))];
   const { g, a } = goalTally(m);
   const badge = (pid) => `${'⚽'.repeat(g[pid] || 0)}${' A'.repeat(a[pid] || 0)}`;
   const closes = new Date(mo.closes_at);
@@ -773,6 +776,13 @@ function newsShare(n) {
 // ---------- what's new in the app (P190) ----------
 // Newest first. `en` is shown on the page, `sr` goes into the WhatsApp message (Serbian latin, no diacritics).
 const UPDATES = [
+  { date: '2026-11-07', title: 'Everyone who was IN can rate and vote', en: [
+    'Everyone marked IN for a match (waiting list too) can rate players and vote man of the match, and can be rated, even if they were missing from the line-up.',
+    'Auto-balance puts everyone on a team: the bench grows as needed instead of stopping at 4.',
+  ], sr: [
+    'Svi koji su bili IN (i sa liste cekanja) mogu da ocenjuju i glasaju za igraca utakmice, i mogu da budu ocenjeni, cak i ako nisu bili u postavi.',
+    'Auto-balance stavlja sve u timove: klupa se siri koliko treba.',
+  ] },
   { date: '2026-10-29', title: 'Team photo for every match', en: [
     'Took a picture after the game? Open the match and tap + Add photo. It shows on the match page and in the news.',
     'Share sends the picture itself to WhatsApp from your phone.',
@@ -1366,7 +1376,11 @@ function renderTactics(v) {
       ${p ? (() => { const ep = effPos(T.m, p), oop = !bench && ep !== role && !(ep === 'OUT' && role !== 'GK');
         return `<div class="pa ${oop ? 'oop' : ''}" title="${oop ? `Natural ${ep}, playing ${role}` : ''}"><span class="pos ${ep}">${ep === 'OUT' ? '⚽' : ep}</span><span class="an ${ablCls(p.rating)}">${p.rating}</span></div>`; })() : ''}</div>`;
   };
-  const benchSlots = (team) => Array.from({ length: BENCH }, (_, i) => slotHtml(team, { slot: 100 + i }, true)).join('');
+  const benchSlots = (team) => {
+    const used = Object.keys(T.asg).filter((k) => k.startsWith(team + ':')).map((k) => Number(k.slice(2))).filter((x) => x >= 100);
+    const n = Math.max(BENCH, used.length ? Math.max(...used) - 99 + 1 : 0);   // always one free place
+    return Array.from({ length: n }, (_, i) => slotHtml(team, { slot: 100 + i }, true)).join('');
+  };
   const sum = (team) => Object.entries(T.asg).filter(([k]) => k.startsWith(team + ':')).map(([, pid]) => (S.pmap[pid] ? strength(S.pmap[pid]) : 0));
   const ra = sum('A'), rb = sum('B');
   const tot = ra.reduce((a, b) => a + b, 0), totB = rb.reduce((a, b) => a + b, 0);
@@ -1569,7 +1583,7 @@ function autoBalance(T, shuffle) {
         asg[s.slot] = pool.splice(i, 1)[0]; placed++;
       }
     }
-    pool.sort((x, y) => POS_ORDER[x.position] - POS_ORDER[y.position]).slice(0, BENCH).forEach((p, i) => (asg[100 + i] = p));
+    pool.sort((x, y) => POS_ORDER[x.position] - POS_ORDER[y.position]).forEach((p, i) => (asg[100 + i] = p));   // nobody left out
     return asg;
   };
   // pick the formation that puts the most players in their natural position (keep the current one on a tie)
